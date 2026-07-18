@@ -3,6 +3,9 @@ package com.cashmint.paymentbridge
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -26,12 +29,15 @@ import com.stripe.stripeterminal.external.callable.TerminalListener
 import com.stripe.stripeterminal.external.models.CollectPaymentIntentConfiguration
 import com.stripe.stripeterminal.external.models.ConfirmPaymentIntentConfiguration
 import com.stripe.stripeterminal.external.models.ConnectionConfiguration
+import com.stripe.stripeterminal.external.models.ConnectionStatus
 import com.stripe.stripeterminal.external.models.CustomerCancellation
 import com.stripe.stripeterminal.external.models.DisconnectReason
 import com.stripe.stripeterminal.external.models.DiscoveryConfiguration
 import com.stripe.stripeterminal.external.models.OfflineStatus
 import com.stripe.stripeterminal.external.models.PaymentIntent
+import com.stripe.stripeterminal.external.models.PaymentStatus
 import com.stripe.stripeterminal.external.models.Reader
+import com.stripe.stripeterminal.external.models.ReaderSoftwareUpdate
 import com.stripe.stripeterminal.external.models.TerminalException
 import com.stripe.stripeterminal.log.LogLevel
 
@@ -47,9 +53,19 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private lateinit var enrollButton: Button
     private lateinit var resetButton: Button
     private lateinit var cancelButton: Button
+    private lateinit var reconnectButton: Button
+    private lateinit var retryButton: Button
+    private lateinit var clearDiagnosticsButton: Button
+    private lateinit var deviceDetails: TextView
+    private lateinit var readerDetails: TextView
+    private lateinit var paymentDetails: TextView
+    private lateinit var diagnostics: TextView
     private var discoveryCancelable: Cancelable? = null
     private var paymentCancelable: Cancelable? = null
     private var activeRequestId: String? = null
+    private var lastClaimedRequestId: String? = null
+    private var lastReader: Reader? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         initializeTerminal()
@@ -76,8 +92,16 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         simulatedSwitch = Switch(this).also { it.text = "Use simulated reader"; it.isChecked = true }
         enrollButton = Button(this).also { it.text = "Enroll bridge"; it.setOnClickListener { enrollBridge() } }
         cancelButton = Button(this).also { it.text = "Cancel active payment"; it.setOnClickListener { cancelActivePayment() } }
+        reconnectButton = Button(this).also { it.text = "Discover / reconnect reader"; it.setOnClickListener { discoverReader(simulatedSwitch.isChecked) } }
+        retryButton = Button(this).also { it.text = "Retry safe payment recovery"; it.setOnClickListener { retryActivePayment() } }
+        clearDiagnosticsButton = Button(this).also { it.text = "Clear diagnostics"; it.setOnClickListener { BridgeWorker.clearDiagnostics(); renderDiagnostics() } }
         resetButton = Button(this).also { it.text = "Reset enrollment"; it.setOnClickListener { resetEnrollment() } }
-        listOf(status, supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton, simulatedSwitch, cancelButton, resetButton).forEach(root::addView)
+        deviceDetails = TextView(this)
+        readerDetails = TextView(this)
+        paymentDetails = TextView(this)
+        diagnostics = TextView(this)
+        simulatedSwitch.setOnCheckedChangeListener { _, checked -> if (credentials.enrolled()) discoverReader(checked) }
+        listOf(status, supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton, deviceDetails, simulatedSwitch, readerDetails, reconnectButton, paymentDetails, cancelButton, retryButton, diagnostics, clearDiagnosticsButton, resetButton).forEach(root::addView)
         setContentView(root)
     }
 
@@ -85,12 +109,20 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         status.text = "Cashmint payment bridge\nNot enrolled"
         listOf(supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton).forEach { it.visibility = View.VISIBLE }
         cancelButton.isEnabled = false
+        retryButton.isEnabled = false
+        listOf(deviceDetails, readerDetails, paymentDetails, diagnostics, reconnectButton, clearDiagnosticsButton).forEach { it.visibility = View.GONE }
     }
 
     private fun showDiagnostics() {
         listOf(supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton).forEach { it.visibility = View.GONE }
         cancelButton.isEnabled = true
-        status.text = "Cashmint payment bridge\n${credentials.restaurantName} / ${credentials.locationName}\nDevice ${credentials.deviceId}\nReader reconnecting..."
+        retryButton.isEnabled = credentials.activeRequestId().isNotBlank()
+        listOf(deviceDetails, readerDetails, paymentDetails, diagnostics, reconnectButton, clearDiagnosticsButton).forEach { it.visibility = View.VISIBLE }
+        status.text = "Cashmint payment bridge"
+        deviceDetails.text = "Restaurant: ${credentials.restaurantName}\nLocation: ${credentials.locationName}\nDevice ID: ${credentials.deviceId}\nBackend: enrolled"
+        readerDetails.text = "Reader: reconnecting\nMode: ${if (simulatedSwitch.isChecked) "simulated" else "physical WisePad 3"}"
+        paymentDetails.text = "Payment request: ${credentials.activeRequestId().ifBlank { "none" }}\nState: idle"
+        renderDiagnostics()
     }
 
     private fun enrollBridge() {
@@ -127,7 +159,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun requestPermissionsIfNeeded() {
-        val required = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (required.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) permissions.launch(required) else initializeTerminal()
     }
 
@@ -153,11 +185,13 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private fun discoverReader(simulated: Boolean) {
         discoveryCancelable?.cancel(emptyCallback)
         BridgeWorker.readerDisconnected()
+        readerDetails.text = "Reader: discovering\nMode: ${if (simulated) "simulated" else "physical WisePad 3"}\nDo not pair this reader in Android Bluetooth settings."
         status.text = "Discovering ${if (simulated) "simulated" else "physical WisePad 3"} reader..."
         val config = DiscoveryConfiguration.BluetoothDiscoveryConfiguration(0, simulated)
         discoveryCancelable = Terminal.getInstance().discoverReaders(config, object : DiscoveryListener {
             override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
-                readers.firstOrNull()?.let(::connectReader)
+                runOnUiThread { readerDetails.text = "Reader: ${readers.size} discovered\nMode: ${if (simulated) "simulated" else "physical WisePad 3"}\nSelects the first available Stripe reader." }
+                readers.firstOrNull()?.let { reader -> lastReader = reader; connectReader(reader) }
             }
         }, object : Callback {
             override fun onSuccess() = Unit
@@ -175,7 +209,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         Terminal.getInstance().connectReader(reader, config, object : ReaderCallback {
             override fun onSuccess(reader: Reader) {
                 BridgeWorker.readerConnected()
-                runOnUiThread { status.text = "Reader connected: ${reader.serialNumber}\nWaiting for payment requests..." }
+                runOnUiThread { readerDetails.text = "Reader: connected\nSerial: ${reader.serialNumber}\nPairing code: follow the code shown on the WisePad screen, if prompted."; renderDiagnostics() }
             }
             override fun onFailure(e: TerminalException) {
                 BridgeWorker.readerDisconnected()
@@ -186,19 +220,20 @@ class MainActivity : AppCompatActivity(), TerminalListener {
 
     private fun onClaimedPaymentRequest(requestId: String) {
         activeRequestId = requestId
-        runOnUiThread { status.text = "Payment request claimed\n$requestId\nCreating/retrieving PaymentIntent..." }
+        lastClaimedRequestId = requestId
+        runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: claimed / creating_payment_intent"; retryButton.isEnabled = false }
         api.createIntent(requestId) { created ->
             created.onSuccess { payload ->
                 Terminal.getInstance().retrievePaymentIntent(payload.clientSecret, object : PaymentIntentCallback {
                     override fun onSuccess(intent: PaymentIntent) {
                         BridgeWorker.markWaiting(requestId)
-                        runOnUiThread { status.text = "Waiting for card on reader..." }
+                        runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPresent card on reader." }
                         paymentCancelable = Terminal.getInstance().collectPaymentMethod(
                             intent,
                             object : PaymentIntentCallback {
                                 override fun onSuccess(collected: PaymentIntent) {
                                     BridgeWorker.markProcessing(requestId)
-                                    runOnUiThread { status.text = "Processing card payment..." }
+                                    runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: processing" }
                                     paymentCancelable = Terminal.getInstance().processPaymentIntent(
                                         collected,
                                         CollectPaymentIntentConfiguration.Builder().build(),
@@ -207,7 +242,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                             override fun onSuccess(result: PaymentIntent) {
                                                 BridgeWorker.markUnknownUntilWebhook(requestId)
                                                 activeRequestId = null
-                                                runOnUiThread { status.text = "Payment submitted; awaiting Stripe webhook confirmation." }
+                                                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nAwaiting Stripe webhook confirmation."; renderDiagnostics() }
                                             }
                                             override fun onFailure(e: TerminalException) = failOrReconcile(requestId, e)
                                         }
@@ -222,11 +257,11 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                     }
                     override fun onFailure(e: TerminalException) = failOrReconcile(requestId, e)
                 })
-            }.onFailure { BridgeWorker.markFailureOrUnknown(requestId, it) }
+            }.onFailure { failOrReconcile(requestId, it) }
         }
     }
 
-    private fun failOrReconcile(requestId: String, error: TerminalException) {
+    private fun failOrReconcile(requestId: String, error: Throwable) {
         api.status(requestId) { result ->
             result.onSuccess {
                 BridgeWorker.markFailureOrUnknown(requestId, error)
@@ -235,7 +270,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             }
         }
         activeRequestId = null
-        runOnUiThread { status.text = "Payment state unknown; waiting for server reconciliation.\n${error.errorCode}" }
+        runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nWaiting for server reconciliation: ${error.message}"; retryButton.isEnabled = true; renderDiagnostics() }
     }
 
     private fun cancelActivePayment() {
@@ -249,7 +284,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             override fun onSuccess() {
                 BridgeWorker.markCancelled(requestId)
                 activeRequestId = null
-                runOnUiThread { status.text = "Payment cancelled." }
+                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false }
             }
             override fun onFailure(e: TerminalException) { runOnUiThread { status.text = "Cancel failed: ${e.errorCode}" } }
         })
@@ -260,7 +295,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             override fun onSuccess() {
                 BridgeWorker.markCancelled(requestId)
                 activeRequestId = null
-                runOnUiThread { status.text = "Payment cancelled from POS." }
+                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false }
             }
             override fun onFailure(e: TerminalException) {
                 BridgeWorker.markFailureOrUnknown(requestId, e)
@@ -275,9 +310,29 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private val mobileReaderListener = object : MobileReaderListener {
+        override fun onReportAvailableUpdate(update: ReaderSoftwareUpdate) {
+            runOnUiThread { readerDetails.text = "Reader: firmware update required\nInstall the update from this bridge before taking payments." }
+        }
         override fun onDisconnect(reason: DisconnectReason) {
             BridgeWorker.readerDisconnected()
-            runOnUiThread { status.text = "Reader disconnected: $reason" }
+            runOnUiThread { readerDetails.text = "Reader: disconnected\nReason: $reason\nAutomatic reconnect scheduled."; renderDiagnostics() }
+            mainHandler.postDelayed({ if (credentials.enrolled()) discoverReader(simulatedSwitch.isChecked) }, 5_000)
         }
     }
+
+    private fun retryActivePayment() {
+        val id = activeRequestId ?: credentials.activeRequestId() ?: lastClaimedRequestId
+        if (id.isNullOrBlank()) { paymentDetails.text = "Payment request: none\nNo payment can be retried."; return }
+        api.status(id) { result -> runOnUiThread {
+            if (result.isSuccess) {
+                paymentDetails.text = "Payment request: $id\nState: reconciling with Stripe; no duplicate charge will be created."
+                BridgeWorker.release(id)
+            } else paymentDetails.text = "Payment request: $id\nState: retry unavailable: ${result.exceptionOrNull()?.message}"
+        } }
+    }
+
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.0" }
+
+    override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
+    override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }
 }

@@ -506,6 +506,7 @@ export default function App() {
   const [stripeStatus, setStripeStatus] = useState('connecting'); // 'connecting', 'waiting_for_card', 'processing', 'success', 'failed'
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
   const activePaymentOrderIdRef = useRef(null);
+  const checkoutInFlightRef = useRef(false);
   useEffect(() => {
     activePaymentOrderIdRef.current = activePaymentOrderId;
   }, [activePaymentOrderId]);
@@ -1267,7 +1268,7 @@ export default function App() {
     const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
         setStripeStatus(request.status);
-        if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
+        if (['failed', 'cancelled', 'expired'].includes(request.status)) {
           showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
           setShowStripeModal(false);
           setActivePaymentRequestId(null);
@@ -1462,6 +1463,15 @@ export default function App() {
   // Checkout and Insert into Supabase
   const handleCheckout = async () => {
     if (cart.length === 0) return;
+    if (checkoutInFlightRef.current || activePaymentRequestId) {
+      showNotification(isArabic ? 'A card payment is already in progress.' : 'A card payment is already in progress.', 'info');
+      return;
+    }
+    if (paymentMethod === 'card' && !terminalAvailability.available) {
+      showNotification(isArabic ? 'Card reader is unavailable.' : 'The Android card reader is unavailable.', 'error');
+      return;
+    }
+    checkoutInFlightRef.current = true;
 
     try {
       showNotification(isArabic ? "جاري إرسال الطلب..." : "Submitting order...", "info");
@@ -1606,6 +1616,8 @@ export default function App() {
       } else {
         showNotification(isArabic ? "خطأ أثناء إرسال الطلب" : "Error occurred during checkout process", "error");
       }
+    } finally {
+      checkoutInFlightRef.current = false;
     }
   };
 
@@ -2808,10 +2820,10 @@ export default function App() {
               </button>
               <button
               onClick={() => setPaymentMethod('card')}
-              disabled={terminalAvailability.checked && !terminalAvailability.available}
+              disabled={!terminalAvailability.available || Boolean(activePaymentRequestId)}
               className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all ${paymentMethod === 'card'
                   ? 'bg-amber-500 text-white shadow-sm'
-                  : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${terminalAvailability.checked && !terminalAvailability.available ? 'opacity-40 cursor-not-allowed' : ''
+                  : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${!terminalAvailability.available || activePaymentRequestId ? 'opacity-40 cursor-not-allowed' : ''
                   }`}
               >
                 {t('dine_in') === 'صالة' ? 'بطاقة / فيزا' : 'Card / Visa'}
@@ -2821,7 +2833,7 @@ export default function App() {
             {/* Primary Checkout Button */}
             <button
               onClick={handleCheckout}
-              disabled={cart.length === 0 || (paymentMethod === 'card' && terminalAvailability.checked && !terminalAvailability.available)}
+              disabled={cart.length === 0 || Boolean(activePaymentRequestId) || (paymentMethod === 'card' && !terminalAvailability.available)}
               className={`w-full py-3.5 rounded-xl font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2 ${cart.length > 0
                 ? 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-650 dark:hover:bg-emerald-700 active:scale-[0.99] text-white shadow-emerald-500/10'
                 : 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-655 cursor-not-allowed shadow-none'
@@ -2941,12 +2953,10 @@ export default function App() {
                     const { error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId } });
                     if (error) throw error;
                   } catch (e) { }
-                  setShowStripeModal(false);
-                  setActivePaymentOrderId(null);
-                  setActivePaymentRequestId(null);
-                  activePaymentOrderIdRef.current = null;
-                  showNotification(isArabic ? "تم إلغاء عملية الدفع بالبطاقة" : "Card payment process cancelled", "error");
+                  setStripeStatus('cancel_requested');
+                  showNotification(isArabic ? "تم إرسال طلب الإلغاء" : "Cancellation requested; waiting for reader confirmation.", "info");
                 }}
+                disabled={stripeStatus === 'cancel_requested' || stripeStatus === 'processing'}
                 className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >
                 {isArabic ? "إلغاء الدفع" : "Cancel Payment"}
