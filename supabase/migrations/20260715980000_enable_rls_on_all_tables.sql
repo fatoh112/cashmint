@@ -1,0 +1,15 @@
+-- Enable RLS on all tables to secure schemas against public queries
+
+ALTER TABLE public.stores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.store_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.pos_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cashier_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.coupons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.item_groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.group_item_mapping ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.modifiers ENABLE ROW LEVEL SECURITY;

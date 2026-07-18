@@ -1,0 +1,35 @@
+{
+  "name": "temp-vite",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:pos": "vite build --mode pos --outDir dist-pos",
+    "build:master": "vite build --mode master --outDir dist-master",
+    "build:store": "vite build --mode store --outDir dist-store",
+    "lint": "oxlint src",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.6",
+    "fast-average-color": "^9.5.2",
+    "lucide-react": "^1.24.0",
+    "papaparse": "^5.5.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "oxlint": "^1.71.0",
+    "supabase": "^2.109.1",
+    "tailwindcss": "^4.3.2",
+    "vite": "^8.1.1",
+    "vitest": "^4.1.0"
+  }
+}
