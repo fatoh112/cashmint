@@ -1,0 +1,3 @@
+# CashMint
+
+CashMint project repository.
