@@ -2,7 +2,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.110.6'
 
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, content-type, stripe-signature',
+  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, stripe-signature',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 

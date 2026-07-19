@@ -2,29 +2,68 @@ import { corsHeaders, json, service } from '../_shared/terminal.ts'
 
 const sha256 = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))
   .map((byte) => byte.toString(16).padStart(2, '0')).join('')
-const randomPassword = () => crypto.randomUUID() + crypto.randomUUID() + 'Aa1!'
+// GoTrue bcrypt rejects passwords longer than 72 bytes.
+const randomPassword = () => `${crypto.randomUUID()}Aa1!`
+type FailureCode =
+  | 'method_not_allowed' | 'invalid_json' | 'invalid_enrollment_code'
+  | 'enrollment_lookup_failed' | 'enrollment_unavailable'
+  | 'payment_config_lookup_failed' | 'invalid_payment_configuration'
+  | 'bridge_identity_creation_failed' | 'device_creation_failed'
+  | 'enrollment_redemption_failed' | 'enrollment_already_redeemed'
+  | 'bridge_session_creation_failed' | 'location_lookup_failed' | 'enrollment_failed'
+
+const failure = (code: FailureCode, error: string, status: number) => json({ error, code }, status)
+const logFailure = (stage: string, error: unknown) => {
+  // Keep request secrets (code, password, token) out of function logs.
+  console.error('register-terminal-device failed', { stage, message: error instanceof Error ? error.message : String(error) })
+}
+const authAdminRequest = (path: string, init: RequestInit) => {
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  if (!serviceKey) throw new Error('Service role key is unavailable')
+  return fetch(`${Deno.env.get('SUPABASE_URL')}/auth/v1/admin${path}`, {
+    ...init,
+    headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+  })
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  if (req.method !== 'POST') return failure('method_not_allowed', 'Method not allowed', 405)
   try {
-    const { enrollment_code, display_name } = await req.json()
-    if (!enrollment_code || typeof enrollment_code !== 'string' || enrollment_code.length < 12) throw new Error('Invalid enrollment code')
+    let input: { enrollment_code?: unknown, display_name?: unknown }
+    try { input = await req.json() } catch { return failure('invalid_json', 'Request body must be valid JSON', 400) }
+    const { enrollment_code, display_name } = input
+    if (!enrollment_code || typeof enrollment_code !== 'string' || enrollment_code.length < 12) {
+      return failure('invalid_enrollment_code', 'Enrollment code is invalid', 400)
+    }
     const db = service()
     const codeHash = await sha256(enrollment_code)
     const { data: enrollment, error: enrollmentError } = await db.from('terminal_enrollment_codes').select('*').eq('code_hash', codeHash).is('redeemed_at', null).gt('expires_at', new Date().toISOString()).maybeSingle()
-    if (enrollmentError || !enrollment) throw new Error('Enrollment code is invalid, expired, or already used')
-    const { data: config } = await db.from('restaurant_payment_configs').select('id,restaurant_id,location_id,provider_type,provider_config').eq('id', enrollment.payment_config_id).eq('location_id', enrollment.location_id).eq('is_enabled', true).single()
-    if (!config || config.provider_type !== 'stripe_android_bridge') throw new Error('Invalid terminal payment configuration')
-    const bridgeEmail = `terminal-${crypto.randomUUID()}@bridge.cashmint.invalid`; const bridgePassword = randomPassword()
-    const { data: bridge, error: bridgeError } = await db.auth.admin.createUser({ email: bridgeEmail, password: bridgePassword, email_confirm: true, app_metadata: { terminal_bridge: true } })
-    if (bridgeError || !bridge.user) throw new Error(bridgeError?.message ?? 'Could not create terminal bridge identity')
-    const { data: device, error } = await db.from('terminal_devices').insert({ restaurant_id: config.restaurant_id, location_id: enrollment.location_id, payment_config_id: config.id, bridge_user_id: bridge.user.id, display_name: display_name || 'Cashmint bridge' }).select('id,restaurant_id,location_id,display_name').single()
-    if (error) throw error
-    const { data: redeemed } = await db.from('terminal_enrollment_codes').update({ redeemed_at: new Date().toISOString(), redeemed_by_device_id: device.id }).eq('id', enrollment.id).is('redeemed_at', null).select('id').maybeSingle()
-    if (!redeemed) { await db.from('terminal_devices').delete().eq('id', device.id); throw new Error('Enrollment code was redeemed concurrently') }
+    if (enrollmentError) { logFailure('enrollment_lookup', enrollmentError); return failure('enrollment_lookup_failed', 'Could not validate enrollment code', 500) }
+    if (!enrollment) return failure('enrollment_unavailable', 'Enrollment code is invalid, expired, or already used', 400)
+    const { data: config, error: configError } = await db.from('restaurant_payment_configs').select('id,restaurant_id,location_id,provider_type,provider_config').eq('id', enrollment.payment_config_id).eq('location_id', enrollment.location_id).eq('is_enabled', true).single()
+    if (configError) { logFailure('payment_config_lookup', configError); return failure('payment_config_lookup_failed', 'Could not load terminal payment configuration', 500) }
+    if (!config || config.provider_type !== 'stripe_android_bridge') return failure('invalid_payment_configuration', 'Terminal payment configuration is inactive or invalid', 400)
+    // Use a syntactically valid non-routable address; the identity is confirmed
+    // immediately and never receives email, but Supabase Auth still validates it.
+    const bridgeEmail = `terminal-${crypto.randomUUID()}@bridge.cashmint.example.com`; const bridgePassword = randomPassword()
+    const bridgeResponse = await authAdminRequest('/users', { method: 'POST', body: JSON.stringify({ email: bridgeEmail, password: bridgePassword, email_confirm: true, app_metadata: { terminal_bridge: true } }) })
+    const bridge = await bridgeResponse.json().catch(() => null)
+    if (!bridgeResponse.ok || !bridge?.id) { logFailure('bridge_identity_creation', `Auth status ${bridgeResponse.status}`); return failure('bridge_identity_creation_failed', `Bridge identity service rejected enrollment (HTTP ${bridgeResponse.status})`, 500) }
+    const deleteBridge = () => authAdminRequest(`/users/${bridge.id}`, { method: 'DELETE' }).catch(() => undefined)
+    const { data: device, error } = await db.from('terminal_devices').insert({ restaurant_id: config.restaurant_id, location_id: enrollment.location_id, payment_config_id: config.id, bridge_user_id: bridge.id, display_name: display_name || 'Cashmint bridge' }).select('id,restaurant_id,location_id,display_name').single()
+    if (error || !device) { logFailure('device_creation', error); await deleteBridge(); return failure('device_creation_failed', 'Could not register terminal device', 500) }
+    const { data: redeemed, error: redemptionError } = await db.from('terminal_enrollment_codes').update({ redeemed_at: new Date().toISOString(), redeemed_by_device_id: device.id }).eq('id', enrollment.id).is('redeemed_at', null).select('id').maybeSingle()
+    if (redemptionError) { logFailure('enrollment_redemption', redemptionError); await db.from('terminal_devices').delete().eq('id', device.id); await deleteBridge(); return failure('enrollment_redemption_failed', 'Could not redeem enrollment code', 500) }
+    if (!redeemed) { await db.from('terminal_devices').delete().eq('id', device.id); await deleteBridge(); return failure('enrollment_already_redeemed', 'Enrollment code was redeemed concurrently', 409) }
     const tokenResponse = await fetch(`${Deno.env.get('SUPABASE_URL')}/auth/v1/token?grant_type=password`, { method:'POST', headers:{ apikey:Deno.env.get('SUPABASE_ANON_KEY') ?? '', 'Content-Type':'application/json' }, body:JSON.stringify({ email:bridgeEmail, password:bridgePassword }) })
-    const session = await tokenResponse.json(); if (!tokenResponse.ok || !session.access_token) throw new Error('Could not establish bridge session')
-    const { data: location } = await db.from('restaurant_locations').select('name,restaurants(name)').eq('id', enrollment.location_id).single()
+    const session = await tokenResponse.json().catch(() => null)
+    if (!tokenResponse.ok || !session?.access_token) { logFailure('bridge_session_creation', `Auth status ${tokenResponse.status}`); return failure('bridge_session_creation_failed', 'Could not establish bridge session', 500) }
+    const { data: location, error: locationError } = await db.from('restaurant_locations').select('name,restaurants(name)').eq('id', enrollment.location_id).single()
+    if (locationError || !location) { logFailure('location_lookup', locationError); return failure('location_lookup_failed', 'Could not load restaurant location', 500) }
     return json({ device_id:device.id, restaurant_id:device.restaurant_id, location_id:device.location_id, restaurant_name:location?.restaurants?.name, location_name:location?.name, stripe_location_id:config.provider_config?.stripe_location_id ?? null, session, supabase_url:Deno.env.get('SUPABASE_URL'), anon_key:Deno.env.get('SUPABASE_ANON_KEY') })
-  } catch (error) { return json({ error: error.message }, 400) }
+  } catch (error) {
+    logFailure('unexpected', error)
+    return failure('enrollment_failed', 'Enrollment could not be completed', 500)
+  }
 })

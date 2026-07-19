@@ -9,14 +9,18 @@ import java.io.IOException
 /** All amounts stay server-side. This client can only claim and process a request ID. */
 class BridgeApi(private val baseUrl: String, private val anonKey: String, private val accessToken: () -> String) {
     private val http = OkHttpClient()
-    private fun request(path: String, body: JSONObject = JSONObject()): Request = Request.Builder()
+    private fun request(path: String, body: JSONObject = JSONObject(), authenticated: Boolean = true): Request {
+        val builder = Request.Builder()
         .url("$baseUrl/functions/v1/$path")
-        .header("apikey", anonKey).header("Authorization", "Bearer ${accessToken()}")
-        .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        .header("apikey", anonKey)
+        .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+        if (authenticated) builder.header("Authorization", "Bearer ${accessToken()}")
+        return builder.build()
+    }
     fun connectionToken(done: (Result<String>) -> Unit) = call("terminal-connection-token", JSONObject(), done) { it.getString("secret") }
     fun createIntent(id: String, done: (Result<IntentPayload>) -> Unit) = call("create-terminal-payment-intent", JSONObject().put("payment_request_id", id), done) { IntentPayload(it.getString("id"), it.getString("client_secret")) }
     fun status(id: String, done: (Result<JSONObject>) -> Unit) = call("retrieve-terminal-payment-status", JSONObject().put("payment_request_id", id), done) { it }
-    fun enroll(code: String, displayName: String, done: (Result<JSONObject>) -> Unit) = call("register-terminal-device", JSONObject().put("enrollment_code", code).put("display_name", displayName), done) { it }
+    fun enroll(code: String, displayName: String, done: (Result<JSONObject>) -> Unit) = call("register-terminal-device", JSONObject().put("enrollment_code", code).put("display_name", displayName), done, authenticated = false) { it }
     fun cancelPayment(id: String, done: (Result<JSONObject>) -> Unit) = call("cancel-terminal-payment", JSONObject().put("payment_request_id", id), done) { it }
     fun function(path: String, body: JSONObject, done: (Result<JSONObject>) -> Unit) = call(path, body, done) { it }
     fun refreshSession(refreshToken: String, done: (Result<JSONObject>) -> Unit) {
@@ -63,11 +67,20 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
             .build()
         return http.newWebSocket(request, listener)
     }
-    private fun <T> call(path: String, body: JSONObject, done: (Result<T>) -> Unit, map: (JSONObject) -> T) {
-        http.newCall(request(path, body)).enqueue(object : Callback {
+    private fun safeError(raw: String, status: Int): String = try {
+        val value = JSONObject(raw)
+        value.optString("error").takeIf { it.isNotBlank() }
+            ?: value.optString("message").takeIf { it.isNotBlank() }
+            ?: "Request failed"
+    } catch (_: Exception) { "Request failed" }.let { "HTTP $status: $it" }
+
+    private fun <T> call(path: String, body: JSONObject, done: (Result<T>) -> Unit, authenticated: Boolean = true, map: (JSONObject) -> T) {
+        http.newCall(request(path, body, authenticated)).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) = done(Result.failure(e))
             override fun onResponse(call: Call, response: Response) { response.use { r ->
-                try { val value = JSONObject(r.body!!.string()); if (!r.isSuccessful) error(value.optString("error", "Request failed")); done(Result.success(map(value))) } catch (e: Exception) { done(Result.failure(e)) }
+                val raw = r.body?.string().orEmpty()
+                if (!r.isSuccessful) { done(Result.failure(IOException(safeError(raw, r.code)))); return }
+                try { done(Result.success(map(JSONObject(raw)))) } catch (e: Exception) { done(Result.failure(e)) }
             }}
         })
     }
