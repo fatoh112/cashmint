@@ -511,9 +511,44 @@ export default function App() {
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
   const activePaymentOrderIdRef = useRef(null);
   const checkoutInFlightRef = useRef(false);
+  const autoPrintJobsRef = useRef(new Map());
+  const autoPrintQueueRef = useRef(Promise.resolve());
   useEffect(() => {
     activePaymentOrderIdRef.current = activePaymentOrderId;
   }, [activePaymentOrderId]);
+
+  const enqueueAutoReceiptPrint = useCallback((order) => {
+    const orderKey = order?.id || (order?.receipt_number ? `receipt-${order.receipt_number}` : null);
+    if (!orderKey) return Promise.resolve({ success: false, skipped: true });
+
+    const existingJob = autoPrintJobsRef.current.get(orderKey);
+    if (existingJob) return existingJob;
+
+    const job = autoPrintQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
+        const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
+        if (!localPrinterIP || !autoPrint) {
+          return { success: false, skipped: true };
+        }
+
+        const res = await printReceipt(order, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic });
+        if (!res.success) {
+          showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
+        } else {
+          showNotification(isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully");
+        }
+        return res;
+      });
+
+    autoPrintJobsRef.current.set(orderKey, job);
+    autoPrintQueueRef.current = job
+      .catch(() => {})
+      .then(() => new Promise(resolve => setTimeout(resolve, 1200)));
+    setTimeout(() => autoPrintJobsRef.current.delete(orderKey), 30000);
+    return job;
+  }, [store, isArabic]);
 
   // The iPad never connects to a reader. It only enables card checkout when a
   // registered Android bridge has recently reported an attached reader.
@@ -1174,20 +1209,7 @@ export default function App() {
             ) {
               // Immediately clear reference to prevent duplicate printing on concurrent update events
               activePaymentOrderIdRef.current = null;
-
-              const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
-              const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
-              if (localPrinterIP && autoPrint) {
-                printReceipt(payload.new, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
-                  if (!res.success) {
-                    showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-                  } else {
-                    showNotification(
-                      isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully"
-                    );
-                  }
-                });
-              }
+              enqueueAutoReceiptPrint(payload.new);
 
               if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
                 playChime();
@@ -1265,7 +1287,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(ordersSubscription);
     };
-  }, [deviceAuth, store, isArabic]);
+  }, [deviceAuth, store, isArabic, enqueueAutoReceiptPrint]);
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
@@ -1291,18 +1313,7 @@ export default function App() {
         }
         finalized = true;
         activePaymentOrderIdRef.current = null;
-
-        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
-        const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
-        if (localPrinterIP && autoPrint) {
-          printReceipt(completedOrder, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
-            if (!res.success) {
-              showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-            } else {
-              showNotification(isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully");
-            }
-          });
-        }
+        enqueueAutoReceiptPrint(completedOrder);
 
         if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
           playChime();
@@ -1348,7 +1359,7 @@ export default function App() {
     pollPaymentResult();
     const poll = setInterval(pollPaymentResult, 2500);
     return () => { clearInterval(poll); supabase.removeChannel(channel); };
-  }, [activePaymentRequestId, isArabic, deviceAuth?.deviceId]);
+  }, [activePaymentRequestId, isArabic, deviceAuth?.deviceId, enqueueAutoReceiptPrint]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
@@ -1678,18 +1689,7 @@ export default function App() {
         setShowStripeModal(true);
         setStripeStatus(paymentRequest.status || 'pending');
       } else {
-        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
-        if (printerIP && autoPrint) {
-          printReceipt(createdOrder, printerIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
-            if (!res.success) {
-              showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-            } else {
-              showNotification(
-                isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully"
-              );
-            }
-          });
-        }
+        enqueueAutoReceiptPrint(createdOrder);
 
         if (orderCompleteSoundEnabled) playChime();
         setCart([]);
