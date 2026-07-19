@@ -32,7 +32,7 @@ This document provides a complete, updated breakdown of the current architecture
    - The POS does not communicate directly with the Android phone or reader. The flow is: `POS -> Supabase payment request -> Android Bridge -> Stripe reader -> Supabase status update -> POS`.
    - The Android bridge enrols with a single-use Backoffice code, receives a dedicated Supabase Auth session, then sends `bridge_heartbeat` every 20 seconds and listens for payment requests through Realtime plus reconciliation polling.
    - The Card / Visa choice in the POS is enabled only when the server reports an enabled `stripe_android_bridge` configuration and a terminal device with `status = online`, `reader_status = connected`, and a heartbeat no older than 60 seconds. A locally connected reader is not sufficient if the bridge cannot update Supabase.
-   - Android Bridge version **1.0.11** protects the periodic loop from uncaught exceptions, immediately sends a heartbeat after the reader connects, waits for live WisePad processing before finalizing a decline/timeout, and prevents completed final states from replaying the same payment request. Its source lives in `android-payment-bridge/`; the APK must be rebuilt and installed before the device receives Android-side updates.
+   - Android Bridge version **1.0.12** protects the periodic loop from uncaught exceptions, immediately sends a heartbeat after the reader connects, separates reader connection state from payment action state, treats Stripe final failures as final, prevents completed/cancelled requests from replaying, and keeps REST polling as the fallback when Realtime is unavailable. Its source lives in `android-payment-bridge/`; the APK must be rebuilt and installed before the device receives Android-side updates.
 4. **Cloud Order Webhook:** HubRise API order webhooks.
 5. **Local Hardware Printing (Epson TM-T20IV & TM-M30):**
    - Sends ePOS-Print XML commands over SOAP POST requests to the local printer IP using a secure HTTPS endpoint (`https://{IP}/cgi-bin/epos/service.cgi`).
@@ -200,8 +200,9 @@ sequenceDiagram
 2. The cancel function then updates `payment_requests.status = cancelled` unless the request has already succeeded.
 3. Android also cancels any active Stripe Terminal SDK operation when it has a local cancelable operation.
 4. If a card is declined or the reader times out, Stripe may return `requires_payment_method`.
-5. Android version 1.0.11 does not treat a transient `requires_payment_method` response as final while the WisePad 3 is still processing; it waits for repeated reconciliation before marking the request failed.
+5. Android version 1.0.12 treats `requires_payment_method` as a final failed attempt for that payment request. It does not keep waiting on the same PaymentIntent after Stripe says a new payment method is required.
 6. The bridge does not automatically call `collectPaymentMethod` again for the same request.
+7. If Stripe returns `requires_confirmation`, Android retries `processPayment` once against the already-collected PaymentIntent and then enters unknown-state reconciliation instead of collecting the card again.
 7. The cashier must press Visa/Card again to create a new payment request if the customer wants another attempt.
 8. If Android or the network crashes after processing, `retrieve-terminal-payment-status` and the webhook reconcile the PaymentIntent state so the system does not rely on local app memory.
 
@@ -485,7 +486,7 @@ cashpilot/
 
 ```
 android-payment-bridge/
-├── app/build.gradle.kts                         # Android application, Stripe Terminal dependencies, version 1.0.11
+├── app/build.gradle.kts                         # Android application, Stripe Terminal dependencies, version 1.0.12
 └── app/src/main/java/com/cashmint/paymentbridge/
     ├── MainActivity.kt                          # Enrollment UI, reader discovery, payment execution
     ├── BridgeWorker.kt                          # Heartbeat, Realtime subscription, reconciliation loop

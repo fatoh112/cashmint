@@ -23,12 +23,12 @@ object BridgeWorker {
     private var loop: ScheduledFuture<*>? = null
     private var lastRealtimeAt = 0L
     private var reconnectAfter = 0L
+    private var realtimeConnecting = false
     private var lastHeartbeat = "Never"
     private var lastError = ""
+    private var readerActionStatus = ReaderActionState.IDLE
     private var onClaimed: ((String) -> Unit)? = null
     private var onCancel: ((String) -> Unit)? = null
-    private var retryingActiveRequestId = ""
-    private var retryingActiveAt = 0L
 
     fun start(context: Context, client: BridgeApi, claimed: (String) -> Unit, cancelled: (String) -> Unit = {}) {
         credentials = BridgeCredentials(context.applicationContext)
@@ -71,7 +71,13 @@ object BridgeWorker {
         val refresh = credentials.refreshToken()
         if (refresh.isBlank()) { lastError = "Session refresh token is missing"; return }
         api.refreshSession(refresh) { result ->
-            result.onSuccess { credentials.saveSession(it); next() }
+            result.onSuccess {
+                credentials.saveSession(it)
+                realtime?.close(1000, "token refreshed")
+                realtime = null
+                realtimeConnecting = false
+                next()
+            }
                 .onFailure { lastError = "Session refresh failed: ${it.message}" }
         }
     }
@@ -79,8 +85,9 @@ object BridgeWorker {
     private fun heartbeat() {
         api.rpc("bridge_heartbeat", JSONObject()
             .put("p_reader_status", readerStatus)
+            .put("p_reader_action_status", readerActionStatus.name.lowercase())
             .put("p_current_payment_request_id", credentials.activeRequestId().ifBlank { JSONObject.NULL })
-            .put("p_app_version", "1.0.11")) { result ->
+            .put("p_app_version", "1.0.12")) { result ->
             result.onSuccess { lastHeartbeat = java.text.DateFormat.getTimeInstance().format(java.util.Date()) }
                 .onFailure { lastError = "Heartbeat failed: ${it.message}" }
         }
@@ -92,7 +99,7 @@ object BridgeWorker {
             api.status(active) { result -> result.onSuccess { request ->
                 when (request.optString("status")) {
                     "cancel_requested" -> onCancel?.invoke(active)
-                    "requires_payment_method", "succeeded", "failed", "cancelled", "expired" -> release(active)
+                    "succeeded", "failed", "cancelled", "expired" -> release(active)
                 }
             }.onFailure { lastError = "Active payment reconciliation failed: ${it.message}" } }
             return
@@ -112,30 +119,33 @@ object BridgeWorker {
             "pending" -> if (busy.compareAndSet(false, true)) {
                 api.rpc("claim_terminal_payment_request", JSONObject().put("p_payment_request_id", id)) { result ->
                     result.onSuccess {
-                        retryingActiveRequestId = ""
-                        retryingActiveAt = 0L
                         credentials.setActiveRequestId(id)
                         onClaimed?.invoke(id)
                     }.onFailure { busy.set(false); lastError = "Payment claim failed: ${it.message}" }
                 }
             }
-            "claimed", "creating_payment_intent" -> if (busy.compareAndSet(false, true)) {
+            "claimed", "creating_payment_intent", "waiting_for_card", "processing", "unknown" -> if (busy.compareAndSet(false, true)) {
                 credentials.setActiveRequestId(id)
                 onClaimed?.invoke(id)
             }
-            "waiting_for_card", "processing", "unknown", "requires_payment_method", "failed", "cancelled", "expired", "succeeded" -> release(id)
+            "failed", "cancelled", "expired", "succeeded" -> release(id)
         }
     }
 
     private fun ensureRealtime() {
         val now = System.currentTimeMillis()
+        if (realtimeConnecting) return
         if (realtime != null && now - lastRealtimeAt < 60_000L) return
         if (now < reconnectAfter) return
         realtime?.cancel()
+        realtimeConnecting = true
         realtime = api.openRealtime(object : WebSocketListener() {
             override fun onOpen(socket: WebSocket, response: Response) {
                 lastRealtimeAt = System.currentTimeMillis()
                 reconnectAfter = 0L
+                realtimeConnecting = false
+                socket.send(JSONObject().put("topic", "realtime:public:payment_requests").put("event", "access_token").put("ref", "auth")
+                    .put("payload", JSONObject().put("access_token", credentials.accessToken())).toString())
                 socket.send(JSONObject().put("topic", "realtime:public:payment_requests").put("event", "phx_join").put("ref", "1")
                     .put("payload", JSONObject().put("config", JSONObject().put("postgres_changes", JSONArray().put(
                         JSONObject().put("event", "*").put("schema", "public").put("table", "payment_requests")
@@ -150,13 +160,14 @@ object BridgeWorker {
                 val record = payload.optJSONObject("data")?.optJSONObject("record") ?: payload.optJSONObject("record") ?: return
                 handleCandidate(record)
             }
-            override fun onFailure(socket: WebSocket, t: Throwable, response: Response?) { disconnected("Realtime failed: ${t.message}") }
+            override fun onFailure(socket: WebSocket, t: Throwable, response: Response?) { disconnected("Realtime failed: ${response?.code ?: ""} ${t.message}".trim()) }
             override fun onClosed(socket: WebSocket, code: Int, reason: String) { disconnected("Realtime closed: $reason") }
         })
     }
 
     private fun disconnected(message: String) {
         realtime = null
+        realtimeConnecting = false
         lastError = message
         reconnectAfter = System.currentTimeMillis() + 5_000L
     }
@@ -167,8 +178,12 @@ object BridgeWorker {
         // change as soon as Stripe confirms that the local reader is connected.
         if (started.get() && ::api.isInitialized && ::credentials.isInitialized && credentials.enrolled()) heartbeat()
     }
-    fun readerDisconnected() { readerStatus = "disconnected" }
-    fun diagnostics() = "Heartbeat: $lastHeartbeat\nBackend: ${lastError.ifBlank { "OK" }}\nReader: $readerStatus"
+    fun readerDisconnected() { readerStatus = "disconnected"; readerActionStatus = ReaderActionState.IDLE }
+    fun setReaderAction(state: ReaderActionState) {
+        readerActionStatus = state
+        if (started.get() && ::api.isInitialized && ::credentials.isInitialized && credentials.enrolled()) heartbeat()
+    }
+    fun diagnostics() = "Heartbeat: $lastHeartbeat\nBackend: ${lastError.ifBlank { "OK" }}\nReader: $readerStatus\nReader action: ${readerActionStatus.name.lowercase()}"
     fun clearDiagnostics() { lastError = ""; lastHeartbeat = "Never" }
     fun markWaiting(id: String) = update(id, "waiting_for_card")
     fun markProcessing(id: String) = update(id, "processing")
@@ -178,9 +193,9 @@ object BridgeWorker {
     fun markCancelled(id: String) = update(id, "cancelled")
     fun release(id: String) {
         if (credentials.activeRequestId() == id) credentials.setActiveRequestId(null)
-        retryingActiveRequestId = ""
-        retryingActiveAt = 0L
+        readerActionStatus = ReaderActionState.IDLE
         busy.set(false)
+        heartbeat()
     }
     private fun update(id: String, status: String, error: String? = null) {
         api.rpc("bridge_update_terminal_payment", JSONObject().put("p_payment_request_id", id).put("p_status", status).put("p_failure_message", error)) { result ->

@@ -12,7 +12,10 @@ Deno.serve(async (req) => {
     if (request.stripe_payment_intent_id) {
       await stripeRequest(`/payment_intents/${request.stripe_payment_intent_id}/cancel`, request.restaurant_payment_configs.provider_config ?? {}, { method: 'POST', body: '' }, `cancel:${request.id}`)
     }
-    await db.from('payment_requests').update({ status: 'cancelled', failure_code: null, failure_message: null, updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    await db.from('payment_requests').update({ status: 'cancelled', failure_code: null, failure_message: null, finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    if (request.claimed_by_device_id) {
+      await db.from('terminal_devices').update({ current_payment_request_id: null, reader_action_status: 'idle', updated_at: new Date().toISOString() }).eq('id', request.claimed_by_device_id)
+    }
     return json({ status: 'cancelled' })
   } catch (error) { return json({ error: error.message }, 400) }
 })

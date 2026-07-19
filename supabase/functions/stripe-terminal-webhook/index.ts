@@ -35,18 +35,22 @@ Deno.serve(async (req) => {
     if (!request) return json({ received: true })
     // Retrieve from Stripe rather than trusting even a valid webhook's event body.
     const verified = await stripeRequest(`/payment_intents/${intent.id}`, request.restaurant_payment_configs.provider_config ?? {})
+    const finalStatus = ['succeeded', 'failed', 'cancelled', 'expired'].includes(request.status)
     if (verified.status === 'succeeded') {
-      await db.from('payment_requests').update({ status: 'succeeded', failure_code: null, failure_message: null, updated_at: new Date().toISOString() }).eq('id', request.id)
+      await db.from('payment_requests').update({ status: 'succeeded', failure_code: null, failure_message: null, finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id)
       const { error } = await db.rpc('complete_accounting_card_payment', { p_order_id: request.order_id, p_provider_reference: verified.id, p_processor_fee: 0 })
       if (error) throw error
     } else if (['cancel_requested', 'cancelled'].includes(request.status)) {
-      await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment cancelled.', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+      await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment cancelled.', finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else if (verified.status === 'canceled') {
-      await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? null, updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+      await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? null, finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else if (verified.status === 'requires_payment_method') {
-      await db.from('payment_requests').update({ status: 'failed', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment timed out or was declined.', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
-    } else {
+      await db.from('payment_requests').update({ status: 'failed', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment timed out or was declined.', finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    } else if (!finalStatus) {
       await db.from('payment_requests').update({ status: 'unknown', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    }
+    if (['succeeded', 'canceled', 'requires_payment_method'].includes(verified.status) && request.claimed_by_device_id) {
+      await db.from('terminal_devices').update({ current_payment_request_id: null, reader_action_status: 'idle', updated_at: new Date().toISOString() }).eq('id', request.claimed_by_device_id)
     }
     return json({ received: true })
   } catch (error) { console.error(error); return new Response('Webhook handling failed', { status: 500 }) }

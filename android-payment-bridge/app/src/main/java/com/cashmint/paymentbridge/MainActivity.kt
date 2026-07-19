@@ -76,8 +76,10 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private var isStoppingDiscoveryForConnect = false
     private var retryDiscoveryOnResume = false
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val paymentConfirmationPollLimit = 90
-    private val requiresPaymentMethodFinalAfterAttempt = 12
+    private var paymentGeneration = 0
+    private var processRetryUsed = false
+    private var activeStartedAt = 0L
+    private val finalizedRequests = mutableSetOf<String>()
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         if (results.values.all { it }) prepareReaderDiscovery() else showMissingPermissions()
@@ -530,160 +532,193 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             BridgeWorker.release(requestId)
             return
         }
+        if (activeRequestId != null && activeRequestId != requestId) {
+            BridgeWorker.release(requestId)
+            return
+        }
+        if (finalizedRequests.contains(requestId)) {
+            BridgeWorker.release(requestId)
+            return
+        }
+        if (paymentCancelable != null) {
+            BridgeWorker.markUnknownUntilWebhook(requestId)
+            pollStripeCompletion(requestId, paymentGeneration, System.currentTimeMillis())
+            return
+        }
         activeRequestId = requestId
         lastClaimedRequestId = requestId
+        paymentGeneration += 1
+        val generation = paymentGeneration
+        processRetryUsed = false
+        activeStartedAt = System.currentTimeMillis()
         runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: claimed / creating_payment_intent"; retryButton.isEnabled = false }
         api.createIntent(requestId) { created ->
+            if (!isCurrentPayment(requestId, generation)) return@createIntent
             created.onSuccess { payload ->
                 Terminal.getInstance().retrievePaymentIntent(payload.clientSecret, object : PaymentIntentCallback {
                     override fun onSuccess(intent: PaymentIntent) {
+                        if (!isCurrentPayment(requestId, generation)) return
+                        if (PaymentFlowPolicy.isFinalRequestStatus(stripeStatusName(intent.status.toString()))) {
+                            reconcileStripeStatus(requestId, generation, stripeStatusName(intent.status.toString()), intent)
+                            return
+                        }
                         BridgeWorker.markWaiting(requestId)
                         runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPresent card on reader." }
+                        BridgeWorker.setReaderAction(ReaderActionState.COLLECTING)
                         paymentCancelable = Terminal.getInstance().collectPaymentMethod(
                             intent,
                             object : PaymentIntentCallback {
                                 override fun onSuccess(collected: PaymentIntent) {
+                                    if (!isCurrentPayment(requestId, generation)) return
                                     BridgeWorker.markProcessing(requestId)
                                     runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: processing" }
-                                    paymentCancelable = Terminal.getInstance().processPaymentIntent(
-                                        collected,
-                                        CollectPaymentIntentConfiguration.Builder().build(),
-                                        ConfirmPaymentIntentConfiguration.Builder().build(),
-                                        object : PaymentIntentCallback {
-                                            override fun onSuccess(result: PaymentIntent) {
-                                                paymentCancelable = null
-                                                BridgeWorker.markUnknownUntilWebhook(requestId)
-                                                activeRequestId = null
-                                                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nAwaiting Stripe webhook confirmation."; renderDiagnostics() }
-                                                pollStripeCompletion(requestId)
-                                            }
-                                            override fun onFailure(e: TerminalException) = failOrReconcile(requestId, e)
-                                        }
-                                    )
+                                    processPaymentOnce(requestId, generation, collected)
                                 }
-                                override fun onFailure(e: TerminalException) = failOrReconcile(requestId, e)
+                                override fun onFailure(e: TerminalException) = failOrReconcile(requestId, generation, e)
                             },
                             CollectPaymentIntentConfiguration.Builder()
                                 .setCustomerCancellation(CustomerCancellation.ENABLE_IF_AVAILABLE)
                                 .build()
                         )
                     }
-                    override fun onFailure(e: TerminalException) = failOrReconcile(requestId, e)
+                    override fun onFailure(e: TerminalException) = failOrReconcile(requestId, generation, e)
                 })
-            }.onFailure { failOrReconcile(requestId, it) }
+            }.onFailure { failOrReconcile(requestId, generation, it) }
         }
     }
 
-    private fun failOrReconcile(requestId: String, error: Throwable) {
+    private fun processPaymentOnce(requestId: String, generation: Int, intent: PaymentIntent) {
+        BridgeWorker.setReaderAction(ReaderActionState.PROCESSING)
+        paymentCancelable = Terminal.getInstance().processPaymentIntent(
+            intent,
+            CollectPaymentIntentConfiguration.Builder().build(),
+            ConfirmPaymentIntentConfiguration.Builder().build(),
+            object : PaymentIntentCallback {
+                override fun onSuccess(result: PaymentIntent) {
+                    if (!isCurrentPayment(requestId, generation)) return
+                    paymentCancelable = null
+                    reconcileStripeStatus(requestId, generation, stripeStatusName(result.status.toString()), result)
+                }
+
+                override fun onFailure(e: TerminalException) = failOrReconcile(requestId, generation, e)
+            }
+        )
+    }
+
+    private fun failOrReconcile(requestId: String, generation: Int, error: Throwable) {
+        if (!isCurrentPayment(requestId, generation)) return
         paymentCancelable = null
         if (locallyCancelledRequests.contains(requestId)) {
-            BridgeWorker.markCancelled(requestId)
-            activeRequestId = null
-            runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            finalizePayment(requestId, "cancelled", "Payment was cancelled locally.", updateBackend = true)
             return
         }
         api.status(requestId) { result ->
+            if (!isCurrentPayment(requestId, generation)) return@status
             result.onSuccess { status ->
-                if (locallyCancelledRequests.contains(requestId) || status.optString("status") == "cancel_requested" || status.optString("status") == "cancelled") {
-                    BridgeWorker.markCancelled(requestId)
-                    activeRequestId = null
-                    runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
-                } else if (status.optString("status") == "requires_payment_method") {
-                    BridgeWorker.markFailureOrUnknown(requestId, error)
-                    runOnUiThread {
-                        paymentDetails.text = "Payment request: $requestId\nState: reconciling\nReader may still be processing. Waiting for Stripe confirmation."
-                        retryButton.isEnabled = false
-                        renderDiagnostics()
-                    }
-                    pollStripeCompletion(requestId)
-                } else {
-                    BridgeWorker.markFailureOrUnknown(requestId, error)
-                    pollStripeCompletion(requestId)
-                }
+                reconcileStripeStatus(requestId, generation, status.optString("status"), null, error.message)
             }.onFailure {
                 BridgeWorker.markFailureOrUnknown(requestId, error)
-                pollStripeCompletion(requestId)
+                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nNetwork error while checking Stripe. Waiting for webhook."; retryButton.isEnabled = false; renderDiagnostics() }
+                pollStripeCompletion(requestId, generation, System.currentTimeMillis())
             }
         }
-        activeRequestId = null
         runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: reconciling\nChecking Stripe result: ${error.message}"; retryButton.isEnabled = false; renderDiagnostics() }
     }
 
-    private fun pollStripeCompletion(requestId: String, attempt: Int = 0) {
-        if (attempt >= paymentConfirmationPollLimit) {
-            BridgeWorker.markFailed(requestId, "Payment confirmation timed out. Check Stripe Dashboard and order history before trying again.")
-            activeRequestId = null
+    private fun reconcileStripeStatus(requestId: String, generation: Int, stripeStatus: String, intent: PaymentIntent? = null, fallbackMessage: String? = null) {
+        if (!isCurrentPayment(requestId, generation)) return
+        when (PaymentFlowPolicy.decideStripeStatus(stripeStatusName(stripeStatus), processRetryUsed)) {
+            PaymentDecision.FAIL_FINAL -> finalizePayment(requestId, "failed", fallbackMessage ?: "Payment timed out or was declined. Start a new card payment from the cashier.", updateBackend = true)
+            PaymentDecision.RETRY_PROCESS_ONCE -> {
+                val retryIntent = intent
+                if (retryIntent == null) {
+                    BridgeWorker.markUnknownUntilWebhook(requestId)
+                    pollStripeCompletion(requestId, generation, System.currentTimeMillis())
+                    return
+                }
+                processRetryUsed = true
+                processPaymentOnce(requestId, generation, retryIntent)
+            }
+            PaymentDecision.WAIT_FOR_WEBHOOK, PaymentDecision.KEEP_WAITING, PaymentDecision.UNKNOWN_RECONCILE -> {
+                BridgeWorker.markUnknownUntilWebhook(requestId)
+                runOnUiThread {
+                    paymentDetails.text = "Payment request: $requestId\nState: unknown\nAwaiting Stripe webhook confirmation."
+                    retryButton.isEnabled = false
+                    renderDiagnostics()
+                }
+                pollStripeCompletion(requestId, generation, System.currentTimeMillis())
+            }
+            PaymentDecision.CANCEL_FINAL -> finalizePayment(requestId, "cancelled", "Payment cancelled.", updateBackend = true)
+            PaymentDecision.SUCCEEDED_CONFIRMED -> finalizePayment(requestId, "succeeded", "Order completion is confirmed by Stripe webhook.", updateBackend = false)
+        }
+    }
+
+    private fun pollStripeCompletion(requestId: String, generation: Int, unknownStartedAt: Long) {
+        if (!isCurrentPayment(requestId, generation)) return
+        val elapsed = System.currentTimeMillis() - activeStartedAt
+        if (elapsed >= PaymentFlowPolicy.TOTAL_WORKFLOW_TIMEOUT_MS) {
+            BridgeWorker.markUnknownUntilWebhook(requestId)
             runOnUiThread {
-                paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment confirmation timed out. Check Stripe Dashboard and order history before trying again."
-                retryButton.isEnabled = false
+                paymentDetails.text = "Payment request: $requestId\nState: unknown\nStripe confirmation is still pending. Do not start another card payment for this order until the cashier updates."
+                retryButton.isEnabled = true
                 renderDiagnostics()
             }
             return
         }
+        val delay = PaymentFlowPolicy.pollDelayMs(System.currentTimeMillis() - unknownStartedAt)
         mainHandler.postDelayed({
+            if (!isCurrentPayment(requestId, generation)) return@postDelayed
             api.status(requestId) { result ->
+                if (!isCurrentPayment(requestId, generation)) return@status
                 result.onSuccess { status ->
                     when (status.optString("status")) {
                         "succeeded" -> {
-                            BridgeWorker.release(requestId)
-                            runOnUiThread {
-                                paymentDetails.text = "Payment request: $requestId\nState: succeeded\nOrder completion is confirmed by Stripe webhook."
-                                retryButton.isEnabled = false
-                                renderDiagnostics()
-                            }
+                            finalizePayment(requestId, "succeeded", "Order completion is confirmed by Stripe webhook.", updateBackend = false)
                         }
                         "cancel_requested", "cancelled" -> {
-                            BridgeWorker.markCancelled(requestId)
-                            activeRequestId = null
-                            runOnUiThread {
-                                paymentDetails.text = "Payment request: $requestId\nState: cancelled"
-                                retryButton.isEnabled = false
-                                renderDiagnostics()
-                            }
+                            finalizePayment(requestId, "cancelled", "Payment cancelled.", updateBackend = true)
                         }
-                        "requires_payment_method" -> {
-                            if (locallyCancelledRequests.contains(requestId)) {
-                                BridgeWorker.markCancelled(requestId)
-                                return@onSuccess
-                            }
-                            if (attempt >= requiresPaymentMethodFinalAfterAttempt && !terminalStillProcessing()) {
-                                BridgeWorker.markFailed(requestId, "Payment timed out or was declined. Start a new card payment from the cashier.")
-                                activeRequestId = null
-                                runOnUiThread {
-                                    paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment timed out or was declined. Start a new card payment from the cashier."
-                                    retryButton.isEnabled = false
-                                    renderDiagnostics()
-                                }
-                            } else {
-                                runOnUiThread {
-                                    paymentDetails.text = "Payment request: $requestId\nState: processing\nWisePad 3 is still processing. Do not start another payment."
-                                    retryButton.isEnabled = false
-                                    renderDiagnostics()
-                                }
-                                pollStripeCompletion(requestId, attempt + 1)
-                            }
+                        "failed", "requires_payment_method" -> {
+                            finalizePayment(requestId, "failed", status.optString("failure_message").ifBlank { "Payment timed out or was declined. Start a new card payment from the cashier." }, updateBackend = true)
                         }
                         "canceled" -> {
-                            BridgeWorker.markCancelled(requestId)
-                            activeRequestId = null
-                            runOnUiThread {
-                                paymentDetails.text = "Payment request: $requestId\nState: cancelled\nStripe status: ${status.optString("status")}"
-                                retryButton.isEnabled = false
-                                renderDiagnostics()
-                            }
+                            finalizePayment(requestId, "cancelled", "Stripe status: canceled", updateBackend = true)
                         }
-                        else -> pollStripeCompletion(requestId, attempt + 1)
+                        else -> pollStripeCompletion(requestId, generation, unknownStartedAt)
                     }
-                }.onFailure { pollStripeCompletion(requestId, attempt + 1) }
+                }.onFailure { pollStripeCompletion(requestId, generation, unknownStartedAt) }
             }
-        }, 2_000L)
+        }, delay)
     }
 
-    private fun terminalStillProcessing(): Boolean {
-        if (paymentCancelable != null) return true
-        if (!Terminal.isInitialized()) return false
-        val paymentStatus = Terminal.getInstance().paymentStatus.toString()
-        return paymentStatus.contains("WAITING", ignoreCase = true) || paymentStatus.contains("PROCESS", ignoreCase = true)
+    private fun isCurrentPayment(requestId: String, generation: Int): Boolean {
+        if (finalizedRequests.contains(requestId)) return false
+        return activeRequestId == requestId && paymentGeneration == generation
+    }
+
+    private fun stripeStatusName(value: String): String =
+        value.substringAfterLast('.').lowercase()
+
+    private fun finalizePayment(requestId: String, finalState: String, message: String, updateBackend: Boolean) {
+        finalizedRequests.add(requestId)
+        paymentGeneration += 1
+        paymentCancelable = null
+        activeRequestId = null
+        processRetryUsed = false
+        if (updateBackend) {
+            when (finalState) {
+                "failed" -> BridgeWorker.markFailed(requestId, message)
+                "cancelled" -> BridgeWorker.markCancelled(requestId)
+                else -> BridgeWorker.release(requestId)
+            }
+        } else {
+            BridgeWorker.release(requestId)
+        }
+        runOnUiThread {
+            paymentDetails.text = "Payment request: $requestId\nState: $finalState\n$message"
+            retryButton.isEnabled = finalState == "unknown"
+            renderDiagnostics()
+        }
     }
 
     private fun cancelActivePayment() {
@@ -693,47 +728,43 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             return
         }
         locallyCancelledRequests.add(requestId)
-        activeRequestId = null
+        paymentGeneration += 1
+        BridgeWorker.setReaderAction(ReaderActionState.CANCELLING)
         retryButton.isEnabled = false
         paymentDetails.text = "Payment request: $requestId\nState: cancelling"
         api.cancelPayment(requestId) { }
         val cancelable = paymentCancelable
         paymentCancelable = null
         if (cancelable == null) {
-            BridgeWorker.markCancelled(requestId)
-            runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            finalizePayment(requestId, "cancelled", "Payment cancellation requested.", updateBackend = true)
             return
         }
         cancelable.cancel(object : Callback {
             override fun onSuccess() {
-                BridgeWorker.markCancelled(requestId)
-                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false }
+                finalizePayment(requestId, "cancelled", "Payment cancellation requested.", updateBackend = true)
             }
             override fun onFailure(e: TerminalException) {
-                BridgeWorker.markCancelled(requestId)
-                runOnUiThread { status.text = "Cancel requested: ${e.errorCode}"; paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+                finalizePayment(requestId, "cancelled", "Cancel requested: ${e.errorCode}", updateBackend = true)
             }
         })
     }
 
     private fun onCancelRequested(requestId: String) {
         locallyCancelledRequests.add(requestId)
-        activeRequestId = null
+        paymentGeneration += 1
+        BridgeWorker.setReaderAction(ReaderActionState.CANCELLING)
         val cancelable = paymentCancelable
         paymentCancelable = null
         if (cancelable == null) {
-            BridgeWorker.markCancelled(requestId)
-            runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            finalizePayment(requestId, "cancelled", "Payment cancellation requested.", updateBackend = true)
             return
         }
         cancelable.cancel(object : Callback {
             override fun onSuccess() {
-                BridgeWorker.markCancelled(requestId)
-                runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false }
+                finalizePayment(requestId, "cancelled", "Payment cancellation requested.", updateBackend = true)
             }
             override fun onFailure(e: TerminalException) {
-                BridgeWorker.markCancelled(requestId)
-                runOnUiThread { status.text = "Cancel requested: ${e.errorCode}"; paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+                finalizePayment(requestId, "cancelled", "Cancel requested: ${e.errorCode}", updateBackend = true)
             }
         })
     }
@@ -797,7 +828,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.11" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.12" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }

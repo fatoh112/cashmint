@@ -13,7 +13,12 @@ import java.util.TimeZone
 
 /** All amounts stay server-side. This client can only claim and process a request ID. */
 class BridgeApi(private val baseUrl: String, private val anonKey: String, private val accessToken: () -> String) {
-    private val http = OkHttpClient()
+    private val http = OkHttpClient.Builder()
+        .callTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private fun request(path: String, body: JSONObject = JSONObject(), authenticated: Boolean = true): Request {
         val builder = Request.Builder()
         .url("$baseUrl/functions/v1/$path")
@@ -62,16 +67,20 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
     }
     fun realtimeSocket(): WebSocket {
         val realtimeUrl = baseUrl.replace("https://", "wss://").replace("http://", "ws://")
+        val token = URLEncoder.encode(accessToken(), "UTF-8")
+        val key = URLEncoder.encode(anonKey, "UTF-8")
         val request = Request.Builder()
-            .url("$realtimeUrl/realtime/v1/websocket?apikey=$anonKey&vsn=1.0.0")
+            .url("$realtimeUrl/realtime/v1/websocket?apikey=$key&access_token=$token&vsn=1.0.0")
             .header("Authorization", "Bearer ${accessToken()}")
             .build()
         return http.newWebSocket(request, object : WebSocketListener() {})
     }
     fun openRealtime(listener: WebSocketListener): WebSocket {
         val realtimeUrl = baseUrl.replace("https://", "wss://").replace("http://", "ws://")
+        val token = URLEncoder.encode(accessToken(), "UTF-8")
+        val key = URLEncoder.encode(anonKey, "UTF-8")
         val request = Request.Builder()
-            .url("$realtimeUrl/realtime/v1/websocket?apikey=$anonKey&vsn=1.0.0")
+            .url("$realtimeUrl/realtime/v1/websocket?apikey=$key&access_token=$token&vsn=1.0.0")
             .header("Authorization", "Bearer ${accessToken()}")
             .build()
         return http.newWebSocket(request, listener)

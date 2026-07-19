@@ -1,7 +1,7 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
 android { namespace = "com.cashmint.paymentbridge"; compileSdk = 35
-    defaultConfig { applicationId = "com.cashmint.paymentbridge"; minSdk = 26; targetSdk = 35; versionCode = 12; versionName = "1.0.11" }
+    defaultConfig { applicationId = "com.cashmint.paymentbridge"; minSdk = 26; targetSdk = 35; versionCode = 13; versionName = "1.0.12" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }
     kotlinOptions { jvmTarget = "1.8" }
 }
@@ -14,4 +14,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    testImplementation("junit:junit:4.13.2")
 }
