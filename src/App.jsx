@@ -35,7 +35,6 @@ import {
   Wifi,
   LogOut,
   ShoppingBag,
-  Truck,
   Home,
   Trash2,
   Plus,
@@ -465,15 +464,20 @@ export default function App() {
 
   const [cart, setCart] = useState([]);
   const [resolvedTaxRates, setResolvedTaxRates] = useState({});
+  const [bundleComponents, setBundleComponents] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
-  const [orderType, setOrderType] = useState('takeaway'); // 'dine_in', 'takeaway', 'delivery'
+  // Delivery orders originate from connected ordering channels, not this POS.
+  const [orderType, setOrderType] = useState('takeaway');
   const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash' or 'card'
 
   // The POS preview follows the same per-order-type resolver as checkout.
   // Checkout still recalculates on the database, so this is only a display aid.
   useEffect(() => {
     const storeId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
-    const productIds = [...new Set(cart.map(item => item.product?.id).filter(Boolean))];
+    const productIds = [...new Set(cart.flatMap(item => {
+      const components = bundleComponents.filter(component => component.bundle_product_id === item.product?.id);
+      return components.length ? components.map(component => component.component_product_id) : [item.product?.id];
+    }).filter(Boolean))];
     if (!storeId || productIds.length === 0) { setResolvedTaxRates({}); return; }
     let cancelled = false;
     Promise.all(productIds.map(async (productId) => {
@@ -490,7 +494,7 @@ export default function App() {
       if (!cancelled) setResolvedTaxRates({});
     });
     return () => { cancelled = true; };
-  }, [cart, orderType, store?.id, deviceAuth?.storeId]);
+  }, [cart, bundleComponents, orderType, store?.id, deviceAuth?.storeId]);
 
   // Coupon/Promo Code states
   const [couponCodeInput, setCouponCodeInput] = useState('');
@@ -506,10 +510,54 @@ export default function App() {
   const [stripeStatus, setStripeStatus] = useState('connecting'); // 'connecting', 'waiting_for_card', 'processing', 'success', 'failed'
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
   const activePaymentOrderIdRef = useRef(null);
+  const activePaymentOrderRef = useRef(null);
+  const activePaymentUnknownNoticeRef = useRef(false);
   const checkoutInFlightRef = useRef(false);
+  const autoPrintJobsRef = useRef(new Map());
+  const autoPrintQueueRef = useRef(Promise.resolve());
   useEffect(() => {
     activePaymentOrderIdRef.current = activePaymentOrderId;
   }, [activePaymentOrderId]);
+
+  const enqueueAutoReceiptPrint = useCallback((order) => {
+    const orderKey = order?.id || (order?.receipt_number ? `receipt-${order.receipt_number}` : null);
+    if (!orderKey) return Promise.resolve({ success: false, skipped: true });
+
+    const existingJob = autoPrintJobsRef.current.get(orderKey);
+    if (existingJob) return existingJob;
+
+    const job = autoPrintQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
+        const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
+        if (!localPrinterIP || !autoPrint) {
+          return { success: false, skipped: true };
+        }
+
+        let res = { success: false, error: 'Print job did not run' };
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          res = await printReceipt(order, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic });
+          if (res.success) break;
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 2500));
+          }
+        }
+        if (!res.success) {
+          showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
+        } else {
+          showNotification(isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully");
+        }
+        return res;
+      });
+
+    autoPrintJobsRef.current.set(orderKey, job);
+    autoPrintQueueRef.current = job
+      .catch(() => {})
+      .then(() => new Promise(resolve => setTimeout(resolve, 3000)));
+    setTimeout(() => autoPrintJobsRef.current.delete(orderKey), 60000);
+    return job;
+  }, [store, isArabic]);
 
   // The iPad never connects to a reader. It only enables card checkout when a
   // registered Android bridge has recently reported an attached reader.
@@ -528,7 +576,7 @@ export default function App() {
       });
     };
     check();
-    const interval = setInterval(check, 20000);
+    const interval = setInterval(check, 5000);
     return () => { alive = false; clearInterval(interval); };
   }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId]);
 
@@ -681,12 +729,14 @@ export default function App() {
         const cats = catalog?.categories || [];
         const prods = catalog?.products || [];
         const mods = catalog?.modifiers || [];
+        const bundles = catalog?.bundle_components || [];
         setStore(activeStore);
         setCategories(cats);
         setProducts(prods);
         setModifiers(mods);
+        setBundleComponents(bundles);
         setSelectedCategoryId(cats[0]?.id || null);
-        localStorage.setItem('pos_menu_items', JSON.stringify({ categories: cats, products: prods, modifiers: mods }));
+        localStorage.setItem('pos_menu_items', JSON.stringify({ categories: cats, products: prods, modifiers: mods, bundleComponents: bundles }));
         return;
       } catch (err) {
         console.error('Error fetching POS catalog:', err);
@@ -1168,22 +1218,7 @@ export default function App() {
             ) {
               // Immediately clear reference to prevent duplicate printing on concurrent update events
               activePaymentOrderIdRef.current = null;
-
-              const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
-              const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
-              if (localPrinterIP && autoPrint) {
-                printReceipt(payload.new, localPrinterIP, store ? store.name : 'Cashmint').then(res => {
-                  if (!res.success) {
-                    showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-                  } else {
-                    showNotification(
-                      res.fallback
-                        ? (isArabic ? "تم فتح نافذة الطباعة للفاتورة 🖨️" : "Receipt fallback print window opened 🖨️")
-                        : (isArabic ? "تم إرسال الطلب للطابعة بنجاح 🖨️" : "Receipt printed successfully 🖨️")
-                    );
-                  }
-                });
-              }
+              enqueueAutoReceiptPrint(payload.new);
 
               if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
                 playChime();
@@ -1192,6 +1227,7 @@ export default function App() {
               setShowStripeModal(false);
               setActivePaymentOrderId(null);
               setActivePaymentRequestId(null);
+              activePaymentOrderRef.current = null;
               showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح! 🚀" : "Stripe payment successfully completed! 🚀");
 
               // Update cashier session totals for card orders
@@ -1261,23 +1297,95 @@ export default function App() {
     return () => {
       supabase.removeChannel(ordersSubscription);
     };
-  }, [deviceAuth, store, isArabic]);
+  }, [deviceAuth, store, isArabic, enqueueAutoReceiptPrint]);
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
+    activePaymentUnknownNoticeRef.current = false;
+    let finalized = false;
+    const handlePaymentRequestUpdate = async (request) => {
+      if (!request || finalized) return;
+      setStripeStatus(request.status);
+      if (request.status === 'succeeded') {
+        const orderId = activePaymentOrderIdRef.current || request.order_id;
+        if (!orderId) return;
+        const requestSaysOrderCompleted = request.order_status === 'completed';
+        const { data: completedOrder, error } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('id', orderId)
+          .maybeSingle();
+        if (error && !requestSaysOrderCompleted) {
+          showNotification(error.message || 'Card payment completed, but order status could not be loaded.', 'info');
+          return;
+        }
+        if (completedOrder?.status !== 'completed' && !requestSaysOrderCompleted) {
+          showNotification('Payment confirmed, waiting for the server to complete the order.', 'info');
+          return;
+        }
+        finalized = true;
+        activePaymentOrderIdRef.current = null;
+        setShowStripeModal(false);
+        const receiptOrder = completedOrder || activePaymentOrderRef.current;
+        if (receiptOrder) {
+          enqueueAutoReceiptPrint({ ...receiptOrder, status: 'completed' });
+        }
+
+        if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
+          playChime();
+        }
+        setCart([]);
+        setActivePaymentOrderId(null);
+        setActivePaymentRequestId(null);
+        activePaymentOrderRef.current = null;
+        showNotification('Stripe payment successfully completed!');
+        return;
+      }
+      if (request.status === 'unknown') {
+        setShowStripeModal(true);
+        if (!activePaymentUnknownNoticeRef.current) {
+          activePaymentUnknownNoticeRef.current = true;
+          showNotification('Payment is still being checked with Stripe. Do not charge the customer again yet.', 'info');
+        }
+        return;
+      }
+      if (['failed', 'cancelled', 'expired'].includes(request.status)) {
+        finalized = true;
+        showNotification(request.failure_message || 'Card payment could not be confirmed', 'error');
+        setShowStripeModal(false);
+        setActivePaymentRequestId(null);
+        setActivePaymentOrderId(null);
+        activePaymentOrderIdRef.current = null;
+        activePaymentOrderRef.current = null;
+      }
+    };
     const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
-        setStripeStatus(request.status);
-        if (['failed', 'cancelled', 'expired'].includes(request.status)) {
-          showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
-          setShowStripeModal(false);
-          setActivePaymentRequestId(null);
-          setActivePaymentOrderId(null);
-          activePaymentOrderIdRef.current = null;
-        }
+        handlePaymentRequestUpdate(request);
       }).subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [activePaymentRequestId, isArabic]);
+    const pollPaymentResult = async () => {
+      if (finalized) return;
+      const posDeviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+      const { data, error } = await supabase.rpc('terminal_payment_result_for_pos', {
+        p_payment_request_id: activePaymentRequestId,
+        p_pos_device_id: posDeviceId
+      });
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!error && result) {
+        await handlePaymentRequestUpdate({
+          id: result.payment_request_id,
+          status: result.request_status,
+          order_id: result.order_id,
+          order_status: result.order_status,
+          failure_code: result.failure_code,
+          failure_message: result.failure_message
+        });
+      }
+    };
+    pollPaymentResult();
+    const poll = setInterval(pollPaymentResult, 2500);
+    return () => { clearInterval(poll); supabase.removeChannel(channel); };
+  }, [activePaymentRequestId, isArabic, deviceAuth?.deviceId, enqueueAutoReceiptPrint]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
@@ -1450,25 +1558,42 @@ export default function App() {
       : Math.min(parseFloat(appliedCoupon.discount_value), cartSubtotal))
     : 0;
 
-  const cartWithResolvedTax = cart.map(item => ({
-    ...item,
-    product: { ...item.product, resolved_vat_rate: resolvedTaxRates[item.product?.id] }
-  }));
+  // A sellable combo is expanded only for accounting preview. The server repeats
+  // the same expansion from product_bundle_components before persisting the order.
+  const cartWithResolvedTax = cart.flatMap(item => {
+    const components = bundleComponents.filter(component => component.bundle_product_id === item.product?.id);
+    if (!components.length) return [{ ...item, product: { ...item.product, resolved_vat_rate: resolvedTaxRates[item.product?.id] } }];
+    const componentProducts = components.map(component => ({ component, product: products.find(product => product.id === component.component_product_id) })).filter(entry => entry.product);
+    const totalWeight = componentProducts.reduce((sum, entry) => sum + Number(entry.component.allocation_weight) * Number(entry.product.price), 0);
+    if (!totalWeight) return [{ ...item, product: { ...item.product, resolved_vat_rate: resolvedTaxRates[item.product?.id] } }];
+    return componentProducts.map(({ component, product }) => ({
+      ...item,
+      id: `${item.id}-${component.component_product_id}`,
+      quantity: item.quantity * Number(component.quantity),
+      selectedModifiers: [],
+      product: { ...product, price: Number(item.product.price) * (Number(component.allocation_weight) * Number(product.price)) / totalWeight, resolved_vat_rate: resolvedTaxRates[product.id] }
+    }));
+  });
   const accountingBeforeDiscount = calculateOrderAccounting(cartWithResolvedTax, 0);
   const accounting = calculateOrderAccounting(cartWithResolvedTax, discountAmount);
   const totalAmount = accounting.totals.gross;
   const vatAmount = accounting.totals.vat;
   const netDiscountAmount = accountingBeforeDiscount.totals.net - accounting.totals.net;
+  const taxBreakdown = accounting.lines.reduce((groups, line) => {
+    const key = Number(line.vatRate || 0).toFixed(2);
+    const current = groups[key] || { net: 0, vat: 0, gross: 0 };
+    current.net += line.netAmount;
+    current.vat += line.vatAmount;
+    current.gross += line.grossAmount;
+    groups[key] = current;
+    return groups;
+  }, {});
 
   // Checkout and Insert into Supabase
   const handleCheckout = async () => {
     if (cart.length === 0) return;
     if (checkoutInFlightRef.current || activePaymentRequestId) {
       showNotification(isArabic ? 'A card payment is already in progress.' : 'A card payment is already in progress.', 'info');
-      return;
-    }
-    if (paymentMethod === 'card' && !terminalAvailability.available) {
-      showNotification(isArabic ? 'Card reader is unavailable.' : 'The Android card reader is unavailable.', 'error');
       return;
     }
     checkoutInFlightRef.current = true;
@@ -1571,31 +1696,27 @@ export default function App() {
 
       // 3. Complete checkout directly or initiate Stripe BBPOS WisePad 3 connection
       if (paymentMethod === 'card') {
+        if (terminalAvailability.checked && !terminalAvailability.available) {
+          showNotification(
+            terminalAvailability.activePayment
+              ? (isArabic ? "يوجد دفع بطاقة نشط بالفعل. ألغِ الدفع من تطبيق الجسر أولاً." : "A card payment is already active. Cancel it from the bridge app first.")
+              : (isArabic ? "سنحاول إرسال الدفع للـ Terminal. تأكد أن WisePad 3 متصل في تطبيق الجسر." : "Trying the terminal anyway. Make sure the WisePad 3 is connected in the bridge app."),
+            "info"
+          );
+        }
         const { data: paymentRequest, error: paymentRequestError } = await supabase.rpc('request_terminal_card_payment', {
           p_order_id: createdOrder.id,
           p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
         });
         if (paymentRequestError) throw paymentRequestError;
         if (!paymentRequest?.id) throw new Error('Card payment bridge did not accept the payment request.');
+        activePaymentOrderRef.current = createdOrder;
         setActivePaymentOrderId(createdOrder.id);
         setActivePaymentRequestId(paymentRequest.id);
         setShowStripeModal(true);
         setStripeStatus(paymentRequest.status || 'pending');
       } else {
-        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
-        if (printerIP && autoPrint) {
-          printReceipt(createdOrder, printerIP, store ? store.name : 'Cashmint').then(res => {
-            if (!res.success) {
-              showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-            } else {
-              showNotification(
-                res.fallback
-                  ? (isArabic ? "تم فتح نافذة الطباعة للفاتورة 🖨️" : "Receipt fallback print window opened 🖨️")
-                  : (isArabic ? "تم إرسال الطلب للطابعة بنجاح 🖨️" : "Receipt printed successfully 🖨️")
-              );
-            }
-          });
-        }
+        enqueueAutoReceiptPrint(createdOrder);
 
         if (orderCompleteSoundEnabled) playChime();
         setCart([]);
@@ -1611,6 +1732,8 @@ export default function App() {
             : "Checkout is blocked because a product's accounting group or tax configuration is incomplete.",
           "error"
         );
+      } else if (paymentMethod === 'card' && errorCode.trim()) {
+        showNotification(errorCode.slice(0, 180), "error");
       } else if (errorCode.includes('COUPON_INVALID')) {
         showNotification(isArabic ? "كود الخصم غير صالح أو غير مفعّل." : "The coupon is invalid or inactive.", "error");
       } else {
@@ -2649,16 +2772,6 @@ export default function App() {
                 <ShoppingBag className="w-3.5 h-3.5" />
                 <span>{t('takeaway')}</span>
               </button>
-              <button
-                onClick={() => setOrderType('delivery')}
-                className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${orderType === 'delivery'
-                  ? 'bg-white dark:bg-slate-800 text-amber-600 dark:text-amber-400 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'
-                  }`}
-              >
-                <Truck className="w-3.5 h-3.5" />
-                <span>{isArabic ? 'توصيل' : 'Delivery'}</span>
-              </button>
             </div>
           </div>
 
@@ -2670,9 +2783,12 @@ export default function App() {
                 <p className="text-xs font-bold">{t('empty_cart')}</p>
               </div>
             ) : (
-              cart.map(item => {
+              cart.map((item, index) => {
                 const modsCost = item.selectedModifiers.reduce((s, m) => s + parseFloat(m.price_adjustment), 0);
                 const itemTotal = (parseFloat(item.product.price) + modsCost) * item.quantity;
+                const componentRates = bundleComponents.filter(component => component.bundle_product_id === item.product.id)
+                  .map(component => resolvedTaxRates[component.component_product_id]).filter(rate => rate !== undefined);
+                const taxRates = componentRates.length ? [...new Set(componentRates)] : [accounting.lines[index]?.vatRate || 0];
 
                 return (
                   <div
@@ -2686,6 +2802,9 @@ export default function App() {
                         </h4>
                         <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                           {parseFloat(item.product.price).toFixed(2)} €
+                        </span>
+                        <span className="ms-2 text-[10px] font-black text-amber-600 dark:text-amber-400">
+                          {isArabic ? `ضريبة ${taxRates.map(rate => `${Number(rate).toFixed(0)}%`).join(' + ')}` : `VAT ${taxRates.map(rate => `${Number(rate).toFixed(0)}%`).join(' + ')}`}
                         </span>
                       </div>
                       <span className="text-xs font-black text-slate-750 dark:text-slate-250">
@@ -2797,10 +2916,12 @@ export default function App() {
                   <span>-{netDiscountAmount.toFixed(2)} €</span>
                 </div>
               )}
-              <div className="flex justify-between text-xs">
-                <span className="font-bold text-slate-500 dark:text-slate-400">{isArabic ? `الضريبة (${orderType === 'dine_in' ? 'محلي' : orderType === 'delivery' ? 'توصيل' : 'سفري'})` : `Tax (${orderType === 'dine_in' ? 'Dine in' : orderType === 'delivery' ? 'Delivery' : 'Takeaway'})`}</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-355">{vatAmount.toFixed(2)} €</span>
-              </div>
+              {Object.entries(taxBreakdown).map(([rate, values]) => (
+                <div className="flex justify-between text-xs" key={rate}>
+                  <span className="font-bold text-slate-500 dark:text-slate-400">{isArabic ? `ضريبة ${Number(rate).toFixed(0)}%` : `VAT ${Number(rate).toFixed(0)}%`}</span>
+                  <span className="font-extrabold text-slate-700 dark:text-slate-355">{values.vat.toFixed(2)} €</span>
+                </div>
+              ))}
               <div className="flex justify-between text-sm border-t border-slate-200/50 dark:border-slate-800/80 pt-2 font-black">
                 <span className="text-slate-800 dark:text-slate-200">{t('total')}</span>
                 <span className="text-slate-950 dark:text-white text-base">{totalAmount.toFixed(2)} €</span>
@@ -2820,10 +2941,10 @@ export default function App() {
               </button>
               <button
               onClick={() => setPaymentMethod('card')}
-              disabled={!terminalAvailability.available || Boolean(activePaymentRequestId)}
               className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all ${paymentMethod === 'card'
                   ? 'bg-amber-500 text-white shadow-sm'
-                  : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${!terminalAvailability.available || activePaymentRequestId ? 'opacity-40 cursor-not-allowed' : ''
+                  : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${terminalAvailability.checked && !terminalAvailability.available ? 'opacity-70'
+                    : ''
                   }`}
               >
                 {t('dine_in') === 'صالة' ? 'بطاقة / فيزا' : 'Card / Visa'}
@@ -2833,7 +2954,7 @@ export default function App() {
             {/* Primary Checkout Button */}
             <button
               onClick={handleCheckout}
-              disabled={cart.length === 0 || Boolean(activePaymentRequestId) || (paymentMethod === 'card' && !terminalAvailability.available)}
+              disabled={cart.length === 0}
               className={`w-full py-3.5 rounded-xl font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2 ${cart.length > 0
                 ? 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-650 dark:hover:bg-emerald-700 active:scale-[0.99] text-white shadow-emerald-500/10'
                 : 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-655 cursor-not-allowed shadow-none'
@@ -2932,12 +3053,12 @@ export default function App() {
 
             <div className="space-y-2">
               <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
-                {isArabic ? "جاري الاتصال بقارئ البطاقات..." : "Connecting to Card Reader..."}
+                {stripeStatus === 'succeeded' ? 'Payment Confirmed' : 'Connecting to Card Reader...'}
               </h3>
               <p className="text-xs text-slate-400 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
-                {isArabic
-                  ? "الرجاء إدخال أو تمرير البطاقة على جهاز BBPOS WisePad 3 لإكمال الدفع."
-                  : "Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader."}
+                {stripeStatus === 'succeeded'
+                  ? 'Closing the payment window now.'
+                  : 'Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader.'}
               </p>
             </div>
 
@@ -2946,20 +3067,22 @@ export default function App() {
             </p>
 
             <div className="flex flex-col gap-2.5 pt-2">
-
               <button
                 onClick={async () => {
                   try {
                     const { error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId } });
                     if (error) throw error;
                   } catch (e) { }
-                  setStripeStatus('cancel_requested');
-                  showNotification(isArabic ? "تم إرسال طلب الإلغاء" : "Cancellation requested; waiting for reader confirmation.", "info");
+                  setShowStripeModal(false);
+                  setActivePaymentOrderId(null);
+                  setActivePaymentRequestId(null);
+                  activePaymentOrderIdRef.current = null;
+                  activePaymentOrderRef.current = null;
+                  showNotification('Card payment process cancelled', 'error');
                 }}
-                disabled={stripeStatus === 'cancel_requested' || stripeStatus === 'processing'}
                 className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >
-                {isArabic ? "إلغاء الدفع" : "Cancel Payment"}
+                Cancel Payment
               </button>
             </div>
           </div>

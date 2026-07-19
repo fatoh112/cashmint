@@ -5,6 +5,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /** All amounts stay server-side. This client can only claim and process a request ID. */
 class BridgeApi(private val baseUrl: String, private val anonKey: String, private val accessToken: () -> String) {
@@ -31,7 +36,7 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
         http.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = done(Result.failure(e))
+            override fun onFailure(call: Call, e: IOException) = done(Result.failure(IOException("Network error: ${e.message}", e)))
             override fun onResponse(call: Call, response: Response) { response.use { r ->
                 try {
                     val value = JSONObject(r.body?.string().orEmpty())
@@ -48,7 +53,11 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
         http.newCall(request).enqueue(object : Callback { override fun onFailure(call: Call, e: IOException) = done(Result.failure(e)); override fun onResponse(call: Call, response: Response) { response.use { r -> try { val raw = r.body?.string().orEmpty(); val value=if (raw.trim().startsWith("[")) org.json.JSONArray(raw).getJSONObject(0) else JSONObject(raw); if(!r.isSuccessful) error(value.optString("message", "RPC failed")); done(Result.success(value)) } catch(e:Exception){done(Result.failure(e))} } } })
     }
     fun pending(locationId: String, done: (Result<List<JSONObject>>) -> Unit) {
-        val request = Request.Builder().url("$baseUrl/rest/v1/payment_requests?select=id,status,stripe_payment_intent_id&location_id=eq.$locationId&status=in.(pending,claimed,creating_payment_intent,waiting_for_card,processing,unknown,cancel_requested)&order=created_at.asc&limit=1").header("apikey", anonKey).header("Authorization", "Bearer ${accessToken()}").get().build()
+        val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).also {
+            it.timeZone = TimeZone.getTimeZone("UTC")
+        }
+        val now = URLEncoder.encode(formatter.format(Date()), "UTF-8")
+        val request = Request.Builder().url("$baseUrl/rest/v1/payment_requests?select=id,status,stripe_payment_intent_id,expires_at&location_id=eq.$locationId&status=in.(pending,claimed,creating_payment_intent,waiting_for_card,processing,unknown,cancel_requested)&expires_at=gt.$now&order=created_at.asc&limit=1").header("apikey", anonKey).header("Authorization", "Bearer ${accessToken()}").get().build()
         http.newCall(request).enqueue(object: Callback { override fun onFailure(call: Call,e:IOException)=done(Result.failure(e)); override fun onResponse(call:Call,response:Response){response.use { r -> try { val a=org.json.JSONArray(r.body!!.string()); done(Result.success((0 until a.length()).map{a.getJSONObject(it)})) } catch(e:Exception){done(Result.failure(e))} } } })
     }
     fun realtimeSocket(): WebSocket {
@@ -69,14 +78,17 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
     }
     private fun safeError(raw: String, status: Int): String = try {
         val value = JSONObject(raw)
-        value.optString("error").takeIf { it.isNotBlank() }
+        val code = value.optString("code").takeIf { it.isNotBlank() }
+        val error = value.optString("error").takeIf { it.isNotBlank() }
             ?: value.optString("message").takeIf { it.isNotBlank() }
             ?: "Request failed"
-    } catch (_: Exception) { "Request failed" }.let { "HTTP $status: $it" }
+        val details = value.optString("details").takeIf { it.isNotBlank() }
+        listOfNotNull("HTTP $status", code, error, details).joinToString(": ")
+    } catch (_: Exception) { "HTTP $status: Request failed" }
 
     private fun <T> call(path: String, body: JSONObject, done: (Result<T>) -> Unit, authenticated: Boolean = true, map: (JSONObject) -> T) {
         http.newCall(request(path, body, authenticated)).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = done(Result.failure(e))
+            override fun onFailure(call: Call, e: IOException) = done(Result.failure(IOException("Network error: ${e.message}", e)))
             override fun onResponse(call: Call, response: Response) { response.use { r ->
                 val raw = r.body?.string().orEmpty()
                 if (!r.isSuccessful) { done(Result.failure(IOException(safeError(raw, r.code)))); return }

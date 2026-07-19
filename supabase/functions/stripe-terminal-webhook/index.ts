@@ -39,8 +39,10 @@ Deno.serve(async (req) => {
       await db.from('payment_requests').update({ status: 'succeeded', failure_code: null, failure_message: null, updated_at: new Date().toISOString() }).eq('id', request.id)
       const { error } = await db.rpc('complete_accounting_card_payment', { p_order_id: request.order_id, p_provider_reference: verified.id, p_processor_fee: 0 })
       if (error) throw error
-    } else if (['canceled', 'requires_payment_method'].includes(verified.status)) {
-      await db.from('payment_requests').update({ status: verified.status === 'canceled' ? 'cancelled' : 'failed', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? null, updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    } else if (verified.status === 'canceled') {
+      await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? null, updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    } else if (verified.status === 'requires_payment_method') {
+      await db.from('payment_requests').update({ status: 'waiting_for_card', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment attempt was not completed. Present the card again.', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else {
       await db.from('payment_requests').update({ status: 'unknown', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     }
