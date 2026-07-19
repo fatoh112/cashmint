@@ -15,7 +15,6 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -54,7 +53,6 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private lateinit var anonKeyInput: EditText
     private lateinit var enrollmentCodeInput: EditText
     private lateinit var displayNameInput: EditText
-    private lateinit var simulatedSwitch: Switch
     private lateinit var enrollButton: Button
     private lateinit var resetButton: Button
     private lateinit var cancelButton: Button
@@ -72,6 +70,9 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private var activeRequestId: String? = null
     private var lastClaimedRequestId: String? = null
     private var lastReader: Reader? = null
+    private var isDiscovering = false
+    private var isConnectingReader = false
+    private var isStoppingDiscoveryForConnect = false
     private var retryDiscoveryOnResume = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -97,10 +98,9 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         anonKeyInput = EditText(this).also { it.hint = "Supabase anon key" }
         enrollmentCodeInput = EditText(this).also { it.hint = "Enrollment code" }
         displayNameInput = EditText(this).also { it.hint = "Display name" }
-        simulatedSwitch = Switch(this).also { it.text = "Use simulated reader"; it.isChecked = true }
         enrollButton = Button(this).also { it.text = "Enroll bridge"; it.setOnClickListener { enrollBridge() } }
         cancelButton = Button(this).also { it.text = "Cancel active payment"; it.setOnClickListener { cancelActivePayment() } }
-        reconnectButton = Button(this).also { it.text = "Discover / reconnect reader"; it.setOnClickListener { discoverReader(simulatedSwitch.isChecked) } }
+        reconnectButton = Button(this).also { it.text = "Discover / reconnect WisePad 3"; it.setOnClickListener { reconnectReader() } }
         retryButton = Button(this).also { it.text = "Retry safe payment recovery"; it.setOnClickListener { retryActivePayment() } }
         locationSettingsButton = Button(this).also {
             it.text = "Open Location Settings"
@@ -124,8 +124,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         readerDetails = TextView(this)
         paymentDetails = TextView(this)
         diagnostics = TextView(this)
-        simulatedSwitch.setOnCheckedChangeListener { _, checked -> if (credentials.enrolled()) discoverReader(checked) }
-        listOf(status, supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton, deviceDetails, simulatedSwitch, readerDetails, reconnectButton, locationSettingsButton, bluetoothSettingsButton, paymentDetails, cancelButton, retryButton, diagnostics, clearDiagnosticsButton, resetButton).forEach(root::addView)
+        listOf(status, supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton, deviceDetails, readerDetails, reconnectButton, locationSettingsButton, bluetoothSettingsButton, paymentDetails, cancelButton, retryButton, diagnostics, clearDiagnosticsButton, resetButton).forEach(root::addView)
         setContentView(root)
     }
 
@@ -154,7 +153,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         listOf(deviceDetails, readerDetails, paymentDetails, diagnostics, reconnectButton, clearDiagnosticsButton).forEach { it.visibility = View.VISIBLE }
         status.text = "Cashmint payment bridge"
         deviceDetails.text = "Restaurant: ${credentials.restaurantName}\nLocation: ${credentials.locationName}\nDevice ID: ${credentials.deviceId}\nBackend: enrolled"
-        readerDetails.text = "Reader: reconnecting\nMode: ${if (simulatedSwitch.isChecked) "simulated" else "physical WisePad 3"}"
+        readerDetails.text = "Reader: ready\nMode: physical WisePad 3\nTap Discover / reconnect WisePad 3 when the reader is awake."
         paymentDetails.text = "Payment request: ${credentials.activeRequestId().ifBlank { "none" }}\nState: idle"
         renderDiagnostics()
     }
@@ -186,6 +185,10 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private fun resetEnrollment() {
         paymentCancelable?.cancel(emptyCallback)
         discoveryCancelable?.cancel(emptyCallback)
+        isDiscovering = false
+        isConnectingReader = false
+        isStoppingDiscoveryForConnect = false
+        reconnectButton.isEnabled = true
         BridgeWorker.stop()
         credentials.clear()
         activeRequestId = null
@@ -281,10 +284,45 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             })
         }
         BridgeWorker.start(this, api, ::onClaimedPaymentRequest, ::onCancelRequested)
-        discoverReader(simulatedSwitch.isChecked)
+        readerDetails.text = "Reader: ready\nMode: physical WisePad 3\nTap Discover / reconnect WisePad 3 when the reader is awake."
+        status.text = "Cashmint payment bridge ready"
+        renderDiagnostics()
     }
 
-    private fun discoverReader(simulated: Boolean) {
+    private fun reconnectReader() {
+        if (isDiscovering || isConnectingReader) {
+            status.text = "Reader setup is already running..."
+            readerDetails.text = "Reader: ${if (isConnectingReader) "connecting" else "discovering"}\nMode: physical WisePad 3\nWait for this step to finish before trying again."
+            renderDiagnostics()
+            return
+        }
+        if (!Terminal.isInitialized()) {
+            prepareReaderDiscovery()
+            return
+        }
+        val connected = Terminal.getInstance().connectedReader
+        if (connected == null) {
+            discoverReader()
+            return
+        }
+        BridgeWorker.readerDisconnected()
+        readerDetails.text = "Reader: reconnecting\nDisconnecting current reader before physical WisePad 3 discovery."
+        status.text = "Disconnecting current reader..."
+        Terminal.getInstance().disconnectReader(object : Callback {
+            override fun onSuccess() {
+                runOnUiThread { discoverReader(allowAlreadyConnectedRecovery = false) }
+            }
+            override fun onFailure(e: TerminalException) {
+                runOnUiThread {
+                    readerDetails.text = "Reader: disconnect failed\nSafe error: ${e.errorCode}"
+                    status.text = "Reader disconnect failed: ${e.errorCode}"
+                    renderDiagnostics()
+                }
+            }
+        })
+    }
+
+    private fun discoverReader(allowAlreadyConnectedRecovery: Boolean = true) {
         val missing = missingPermissions()
         if (missing.isNotEmpty()) {
             showMissingPermissions(missing)
@@ -307,22 +345,98 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             renderDiagnostics()
             return
         }
-        discoveryCancelable?.cancel(emptyCallback)
+        if (Terminal.isInitialized()) {
+            val connected = Terminal.getInstance().connectedReader
+            if (connected != null) {
+                BridgeWorker.readerConnected()
+                lastReader = connected
+                listOf(locationSettingsButton, bluetoothSettingsButton).forEach { it.visibility = View.GONE }
+                readerDetails.text = "Reader: connected\nSerial: ${connected.serialNumber}\nAlready connected; no discovery needed."
+                status.text = "Reader already connected: ${connected.serialNumber}"
+                renderDiagnostics()
+                return
+            }
+        }
+        if (isDiscovering) {
+            status.text = "Reader discovery is already running..."
+            readerDetails.text = "Reader: discovering\nMode: physical WisePad 3\nWait for discovery to finish before trying again."
+            renderDiagnostics()
+            return
+        }
         BridgeWorker.readerDisconnected()
+        isDiscovering = true
+        isConnectingReader = false
+        isStoppingDiscoveryForConnect = false
+        reconnectButton.isEnabled = false
         listOf(locationSettingsButton, bluetoothSettingsButton).forEach { it.visibility = View.GONE }
-        readerDetails.text = "Reader: discovering\nMode: ${if (simulated) "simulated" else "physical WisePad 3"}\nDo not pair this reader in Android Bluetooth settings."
-        status.text = "Discovering ${if (simulated) "simulated" else "physical WisePad 3"} reader..."
-        val config = DiscoveryConfiguration.BluetoothDiscoveryConfiguration(0, simulated)
+        readerDetails.text = "Reader: discovering\nMode: physical WisePad 3\nDo not pair this reader in Android Bluetooth settings."
+        status.text = "Discovering physical WisePad 3 reader..."
+        val config = DiscoveryConfiguration.BluetoothDiscoveryConfiguration(0, false)
         discoveryCancelable = Terminal.getInstance().discoverReaders(config, object : DiscoveryListener {
             override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
-                runOnUiThread { readerDetails.text = "Reader: ${readers.size} discovered\nMode: ${if (simulated) "simulated" else "physical WisePad 3"}\nSelects the first available Stripe reader." }
-                readers.firstOrNull()?.let { reader -> lastReader = reader; connectReader(reader) }
+                runOnUiThread { readerDetails.text = "Reader: ${readers.size} discovered\nMode: physical WisePad 3\nSelects the first available Stripe reader." }
+                if (!isConnectingReader) {
+                    readers.firstOrNull()?.let { reader ->
+                        isConnectingReader = true
+                        lastReader = reader
+                        stopDiscoveryAndConnect(reader)
+                    }
+                }
             }
         }, object : Callback {
-            override fun onSuccess() = Unit
-            override fun onFailure(e: TerminalException) {
-                BridgeWorker.readerDisconnected()
+            override fun onSuccess() {
+                isDiscovering = false
+                discoveryCancelable = null
                 runOnUiThread {
+                    reconnectButton.isEnabled = true
+                    renderDiagnostics()
+                }
+            }
+            override fun onFailure(e: TerminalException) {
+                if (isStoppingDiscoveryForConnect && e.errorCode.toString().contains("CANCELED")) {
+                    isDiscovering = false
+                    discoveryCancelable = null
+                    return
+                }
+                isDiscovering = false
+                discoveryCancelable = null
+                BridgeWorker.readerDisconnected()
+                if (allowAlreadyConnectedRecovery && e.errorCode.toString().contains("ALREADY_CONNECTED_TO_READER")) {
+                    runOnUiThread {
+                        reconnectButton.isEnabled = true
+                        readerDetails.text = "Reader: resetting stale connection\nStripe reported an already-connected reader; disconnecting and retrying discovery."
+                        status.text = "Resetting reader connection..."
+                        renderDiagnostics()
+                    }
+                    Terminal.getInstance().disconnectReader(object : Callback {
+                        override fun onSuccess() {
+                            runOnUiThread { discoverReader(allowAlreadyConnectedRecovery = false) }
+                        }
+                        override fun onFailure(disconnectError: TerminalException) {
+                            runOnUiThread {
+                                reconnectButton.isEnabled = true
+                                isConnectingReader = false
+                                readerDetails.text = "Reader: reset failed\nSafe error: ${disconnectError.errorCode}"
+                                status.text = "Reader reset failed: ${disconnectError.errorCode}"
+                                renderDiagnostics()
+                            }
+                        }
+                    })
+                    return
+                }
+                if (e.errorCode.toString().contains("CANCELED")) {
+                    runOnUiThread {
+                        reconnectButton.isEnabled = true
+                        isConnectingReader = false
+                        readerDetails.text = "Reader: ready\nDiscovery was canceled. Tap Discover / reconnect WisePad 3 once to start again."
+                        status.text = "Reader discovery canceled"
+                        renderDiagnostics()
+                    }
+                    return
+                }
+                runOnUiThread {
+                    reconnectButton.isEnabled = true
+                    isConnectingReader = false
                     readerDetails.text = "Reader: discovery failed\nSafe error: ${e.errorCode}"
                     status.text = "Reader discovery failed: ${e.errorCode}"
                     renderDiagnostics()
@@ -331,21 +445,79 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         })
     }
 
+    private fun stopDiscoveryAndConnect(reader: Reader) {
+        runOnUiThread {
+            readerDetails.text = "Reader: found\nSerial: ${reader.serialNumber ?: "unknown"}\nStopping discovery before connecting..."
+            status.text = "WisePad 3 found; connecting..."
+            renderDiagnostics()
+        }
+        val activeDiscovery = discoveryCancelable
+        if (activeDiscovery == null) {
+            isDiscovering = false
+            connectReader(reader)
+            return
+        }
+        isStoppingDiscoveryForConnect = true
+        activeDiscovery.cancel(object : Callback {
+            override fun onSuccess() {
+                runOnUiThread {
+                    isStoppingDiscoveryForConnect = false
+                    isDiscovering = false
+                    discoveryCancelable = null
+                    connectReader(reader)
+                }
+            }
+
+            override fun onFailure(e: TerminalException) {
+                runOnUiThread {
+                    isStoppingDiscoveryForConnect = false
+                    isDiscovering = false
+                    discoveryCancelable = null
+                    connectReader(reader)
+                }
+            }
+        })
+    }
+
     private fun connectReader(reader: Reader) {
         val stripeLocation = credentials.stripeLocationId
         if (stripeLocation.isBlank()) {
+            isConnectingReader = false
+            reconnectButton.isEnabled = true
             status.text = "Enrollment has no Stripe location."
             return
+        }
+        runOnUiThread {
+            readerDetails.text = "Reader: connecting\nSerial: ${reader.serialNumber ?: "unknown"}\nFollow any prompt on the WisePad 3 screen."
+            status.text = "Connecting WisePad 3..."
+            renderDiagnostics()
         }
         val config = ConnectionConfiguration.BluetoothConnectionConfiguration(stripeLocation, true, mobileReaderListener)
         Terminal.getInstance().connectReader(reader, config, object : ReaderCallback {
             override fun onSuccess(reader: Reader) {
                 BridgeWorker.readerConnected()
-                runOnUiThread { readerDetails.text = "Reader: connected\nSerial: ${reader.serialNumber}\nPairing code: follow the code shown on the WisePad screen, if prompted."; renderDiagnostics() }
+                isDiscovering = false
+                isConnectingReader = false
+                isStoppingDiscoveryForConnect = false
+                discoveryCancelable = null
+                runOnUiThread {
+                    reconnectButton.isEnabled = true
+                    readerDetails.text = "Reader: connected\nSerial: ${reader.serialNumber}\nPairing code: follow the code shown on the WisePad screen, if prompted."
+                    renderDiagnostics()
+                }
             }
             override fun onFailure(e: TerminalException) {
                 BridgeWorker.readerDisconnected()
-                runOnUiThread { status.text = "Reader connection failed: ${e.errorCode}" }
+                isDiscovering = false
+                isConnectingReader = false
+                isStoppingDiscoveryForConnect = false
+                discoveryCancelable = null
+                runOnUiThread {
+                    reconnectButton.isEnabled = true
+                    status.text = "Reader connection failed: ${e.errorCode}"
+                    readerDetails.text = "Reader: connection failed\nSafe error: ${e.errorCode}"
+                    renderDiagnostics()
+                }
             }
         })
     }
@@ -443,12 +615,44 @@ class MainActivity : AppCompatActivity(), TerminalListener {
 
     private val mobileReaderListener = object : MobileReaderListener {
         override fun onReportAvailableUpdate(update: ReaderSoftwareUpdate) {
-            runOnUiThread { readerDetails.text = "Reader: firmware update required\nInstall the update from this bridge before taking payments." }
+            runOnUiThread {
+                reconnectButton.isEnabled = false
+                readerDetails.text = "Reader: firmware update available\nVersion: ${update.version ?: "unknown"}\nInstalling update before taking payments."
+                status.text = "Installing WisePad 3 update..."
+                renderDiagnostics()
+            }
+            Terminal.getInstance().installAvailableUpdate()
         }
+
+        override fun onStartInstallingUpdate(update: ReaderSoftwareUpdate, cancelable: Cancelable?) {
+            runOnUiThread {
+                reconnectButton.isEnabled = false
+                readerDetails.text = "Reader: installing update\nVersion: ${update.version ?: "unknown"}\nKeep the WisePad 3 powered on and nearby."
+                status.text = "Installing WisePad 3 update..."
+                renderDiagnostics()
+            }
+        }
+
+        override fun onReportReaderSoftwareUpdateProgress(progress: Float) {
+            val percent = (progress * 100).toInt().coerceIn(0, 100)
+            runOnUiThread {
+                readerDetails.text = "Reader: installing update\nProgress: $percent%\nKeep the WisePad 3 powered on and nearby."
+                status.text = "WisePad 3 update $percent%"
+                renderDiagnostics()
+            }
+        }
+
         override fun onDisconnect(reason: DisconnectReason) {
             BridgeWorker.readerDisconnected()
-            runOnUiThread { readerDetails.text = "Reader: disconnected\nReason: $reason\nAutomatic reconnect scheduled."; renderDiagnostics() }
-            mainHandler.postDelayed({ if (credentials.enrolled()) discoverReader(simulatedSwitch.isChecked) }, 5_000)
+            isDiscovering = false
+            isConnectingReader = false
+            isStoppingDiscoveryForConnect = false
+            discoveryCancelable = null
+            runOnUiThread {
+                reconnectButton.isEnabled = true
+                readerDetails.text = "Reader: disconnected\nReason: $reason\nTap Discover / reconnect WisePad 3 when the reader is awake."
+                renderDiagnostics()
+            }
         }
     }
 
@@ -463,7 +667,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.1" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.6" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }

@@ -528,7 +528,7 @@ export default function App() {
       });
     };
     check();
-    const interval = setInterval(check, 20000);
+    const interval = setInterval(check, 5000);
     return () => { alive = false; clearInterval(interval); };
   }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId]);
 
@@ -1268,7 +1268,7 @@ export default function App() {
     const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
         setStripeStatus(request.status);
-        if (['failed', 'cancelled', 'expired'].includes(request.status)) {
+        if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
           showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
           setShowStripeModal(false);
           setActivePaymentRequestId(null);
@@ -1467,10 +1467,6 @@ export default function App() {
       showNotification(isArabic ? 'A card payment is already in progress.' : 'A card payment is already in progress.', 'info');
       return;
     }
-    if (paymentMethod === 'card' && !terminalAvailability.available) {
-      showNotification(isArabic ? 'Card reader is unavailable.' : 'The Android card reader is unavailable.', 'error');
-      return;
-    }
     checkoutInFlightRef.current = true;
 
     try {
@@ -1571,6 +1567,14 @@ export default function App() {
 
       // 3. Complete checkout directly or initiate Stripe BBPOS WisePad 3 connection
       if (paymentMethod === 'card') {
+        if (terminalAvailability.checked && !terminalAvailability.available) {
+          showNotification(
+            terminalAvailability.activePayment
+              ? (isArabic ? "يوجد دفع بطاقة نشط بالفعل. ألغِ الدفع من تطبيق الجسر أولاً." : "A card payment is already active. Cancel it from the bridge app first.")
+              : (isArabic ? "سنحاول إرسال الدفع للـ Terminal. تأكد أن WisePad 3 متصل في تطبيق الجسر." : "Trying the terminal anyway. Make sure the WisePad 3 is connected in the bridge app."),
+            "info"
+          );
+        }
         const { data: paymentRequest, error: paymentRequestError } = await supabase.rpc('request_terminal_card_payment', {
           p_order_id: createdOrder.id,
           p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
@@ -1611,6 +1615,8 @@ export default function App() {
             : "Checkout is blocked because a product's accounting group or tax configuration is incomplete.",
           "error"
         );
+      } else if (paymentMethod === 'card' && errorCode.trim()) {
+        showNotification(errorCode.slice(0, 180), "error");
       } else if (errorCode.includes('COUPON_INVALID')) {
         showNotification(isArabic ? "كود الخصم غير صالح أو غير مفعّل." : "The coupon is invalid or inactive.", "error");
       } else {
@@ -2820,10 +2826,10 @@ export default function App() {
               </button>
               <button
               onClick={() => setPaymentMethod('card')}
-              disabled={!terminalAvailability.available || Boolean(activePaymentRequestId)}
               className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all ${paymentMethod === 'card'
                   ? 'bg-amber-500 text-white shadow-sm'
-                  : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${!terminalAvailability.available || activePaymentRequestId ? 'opacity-40 cursor-not-allowed' : ''
+                  : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${terminalAvailability.checked && !terminalAvailability.available ? 'opacity-70'
+                    : ''
                   }`}
               >
                 {t('dine_in') === 'صالة' ? 'بطاقة / فيزا' : 'Card / Visa'}
@@ -2833,7 +2839,7 @@ export default function App() {
             {/* Primary Checkout Button */}
             <button
               onClick={handleCheckout}
-              disabled={cart.length === 0 || Boolean(activePaymentRequestId) || (paymentMethod === 'card' && !terminalAvailability.available)}
+              disabled={cart.length === 0}
               className={`w-full py-3.5 rounded-xl font-bold text-xs transition-all shadow-md flex items-center justify-center gap-2 ${cart.length > 0
                 ? 'bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-650 dark:hover:bg-emerald-700 active:scale-[0.99] text-white shadow-emerald-500/10'
                 : 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-655 cursor-not-allowed shadow-none'
@@ -2953,10 +2959,12 @@ export default function App() {
                     const { error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId } });
                     if (error) throw error;
                   } catch (e) { }
-                  setStripeStatus('cancel_requested');
-                  showNotification(isArabic ? "تم إرسال طلب الإلغاء" : "Cancellation requested; waiting for reader confirmation.", "info");
+                  setShowStripeModal(false);
+                  setActivePaymentOrderId(null);
+                  setActivePaymentRequestId(null);
+                  activePaymentOrderIdRef.current = null;
+                  showNotification(isArabic ? "تم إلغاء عملية الدفع بالبطاقة" : "Card payment process cancelled", "error");
                 }}
-                disabled={stripeStatus === 'cancel_requested' || stripeStatus === 'processing'}
                 className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >
                 {isArabic ? "إلغاء الدفع" : "Cancel Payment"}
