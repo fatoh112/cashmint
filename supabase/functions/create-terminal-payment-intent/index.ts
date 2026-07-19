@@ -11,7 +11,9 @@ Deno.serve(async (req) => {
     const amount = Math.round(Number(order.total_amount) * 100)
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error('Server order amount is invalid')
     const config = request.restaurant_payment_configs
-    const body = new URLSearchParams({ amount: String(amount), currency: String(config.currency ?? order.currency).toLowerCase(), payment_method_types: 'card_present', capture_method: 'automatic', 'metadata[payment_request_id]': request.id, 'metadata[order_id]': request.order_id, 'metadata[location_id]': request.location_id })
+    // Stripe expects array fields in form-encoded requests to use [] notation.
+    // Sending `payment_method_types` without it is rejected as "Invalid array".
+    const body = new URLSearchParams({ amount: String(amount), currency: String(config.currency ?? order.currency).toLowerCase(), 'payment_method_types[]': 'card_present', capture_method: 'automatic', 'metadata[payment_request_id]': request.id, 'metadata[order_id]': request.order_id, 'metadata[location_id]': request.location_id })
     const intent = await stripeRequest('/payment_intents', config.provider_config ?? {}, { method: 'POST', body }, request.idempotency_key)
     const { error } = await db.from('payment_requests').update({ stripe_payment_intent_id: intent.id, stripe_payment_intent_client_secret: intent.client_secret, status: 'waiting_for_card', updated_at: new Date().toISOString() }).eq('id', request.id).eq('claimed_by_device_id', request.claimed_by_device_id)
     if (error) throw error
