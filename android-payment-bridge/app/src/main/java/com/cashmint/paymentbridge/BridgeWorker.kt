@@ -35,7 +35,13 @@ object BridgeWorker {
         onCancel = cancelled
         if (!credentials.enrolled()) return
         if (started.compareAndSet(false, true)) {
-            loop = executor.scheduleAtFixedRate({ tick() }, 0, 20, TimeUnit.SECONDS)
+            // Never let an unexpected bridge/network exception stop the periodic
+            // executor. ScheduledExecutorService otherwise silently cancels all
+            // future runs after one uncaught exception.
+            loop = executor.scheduleAtFixedRate({
+                runCatching { tick() }
+                    .onFailure { lastError = "Bridge loop failed: ${it.message ?: it.javaClass.simpleName}" }
+            }, 0, 20, TimeUnit.SECONDS)
         }
     }
 
@@ -72,7 +78,7 @@ object BridgeWorker {
         api.rpc("bridge_heartbeat", JSONObject()
             .put("p_reader_status", readerStatus)
             .put("p_current_payment_request_id", credentials.activeRequestId().ifBlank { JSONObject.NULL })
-            .put("p_app_version", "1.0.0")) { result ->
+            .put("p_app_version", "1.0.1")) { result ->
             result.onSuccess { lastHeartbeat = java.text.DateFormat.getTimeInstance().format(java.util.Date()) }
                 .onFailure { lastError = "Heartbeat failed: ${it.message}" }
         }
@@ -150,7 +156,12 @@ object BridgeWorker {
         reconnectAfter = System.currentTimeMillis() + 5_000L
     }
 
-    fun readerConnected() { readerStatus = "connected" }
+    fun readerConnected() {
+        readerStatus = "connected"
+        // Do not wait for the next scheduled tick: card payment availability must
+        // change as soon as Stripe confirms that the local reader is connected.
+        if (started.get() && ::api.isInitialized && ::credentials.isInitialized && credentials.enrolled()) heartbeat()
+    }
     fun readerDisconnected() { readerStatus = "disconnected" }
     fun diagnostics() = "Heartbeat: $lastHeartbeat\nBackend: ${lastError.ifBlank { "OK" }}\nReader: $readerStatus"
     fun clearDiagnostics() { lastError = ""; lastHeartbeat = "Never" }
