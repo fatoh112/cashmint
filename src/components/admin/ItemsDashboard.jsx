@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../supabaseClient';
 import GroupConfigForm from './GroupConfigForm';
+import ComboBuilderForm from './ComboBuilderForm';
 import CsvImportModal from './CsvImportModal';
 import { 
   Search, 
@@ -31,6 +32,7 @@ export default function ItemsDashboard({ store, showNotification, isArabic }) {
   // Child Config Forms State
   const [groupConfigOpen, setGroupConfigOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState(null);
+  const [comboBuilderOpen, setComboBuilderOpen] = useState(false);
 
   // CSV Import Modal State
   const [csvModalOpen, setCsvModalOpen] = useState(false);
@@ -137,6 +139,10 @@ export default function ItemsDashboard({ store, showNotification, isArabic }) {
     );
   }
 
+  if (comboBuilderOpen) {
+    return <ComboBuilderForm store={store} showNotification={showNotification} isArabic={isArabic} onClose={() => { setComboBuilderOpen(false); loadData(); }} />;
+  }
+
   return (
     <div className="space-y-5 text-right font-sans" dir={isArabic ? 'rtl' : 'ltr'}>
       
@@ -216,7 +222,7 @@ export default function ItemsDashboard({ store, showNotification, isArabic }) {
                   <button
                     onClick={() => {
                       setDropdownOpen(false);
-                      showNotification(isArabic ? "ميزة الباقات / الكومبو قيد التطوير" : "Combo packages features in development", "info");
+                      setComboBuilderOpen(true);
                     }}
                     className="w-full px-4 py-2.5 text-xs text-slate-700 hover:bg-slate-50 text-right font-medium block"
                   >

@@ -2,7 +2,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.110.6'
 
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, stripe-signature',
+  // supabase-js includes x-client-info on browser invokes. It must be allowed
+  // during preflight or the browser blocks the enrollment request before it
+  // reaches this function.
+  'Access-Control-Allow-Headers': 'apikey, authorization, content-type, stripe-signature, x-client-info',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 

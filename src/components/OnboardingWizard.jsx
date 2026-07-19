@@ -7,7 +7,21 @@ const allowedTypes = ['image/png', 'image/jpeg'];
 export default function OnboardingWizard({ storeId, onComplete, isArabic }) {
   const [store, setStore] = useState(null), [name, setName] = useState(''), [file, setFile] = useState(null), [preview, setPreview] = useState(''), [palette, setPalette] = useState(null), [variation, setVariation] = useState(0), [theme, setTheme] = useState(DEFAULT_STORE_THEME), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(''), [warning, setWarning] = useState('');
   const step = store?.onboarding_status === 'branding_required' ? 2 : 1;
-  useEffect(() => { let live = true; supabase.from('stores').select('*').eq('id', storeId).maybeSingle().then(({ data, error: fetchError }) => { if (!live) return; if (fetchError || !data) setError(fetchError?.message || 'Your account has no assigned store.'); else { setStore(data); setName(data.name || ''); setTheme({ ...DEFAULT_STORE_THEME, ...(data.theme_config || {}) }); } setLoading(false); }); return () => { live = false; }; }, [storeId]);
+  useEffect(() => {
+    let live = true;
+    if (!storeId) {
+      setError('Your account has no assigned store.');
+      setLoading(false);
+      return () => { live = false; };
+    }
+    supabase.from('stores').select('*').eq('id', storeId).maybeSingle().then(({ data, error: fetchError }) => {
+      if (!live) return;
+      if (fetchError || !data) setError(fetchError?.message || 'Your account has no assigned store.');
+      else { setStore(data); setName(data.name || ''); setTheme({ ...DEFAULT_STORE_THEME, ...(data.theme_config || {}) }); }
+      setLoading(false);
+    });
+    return () => { live = false; };
+  }, [storeId]);
   useEffect(() => () => { if (preview.startsWith('blob:')) URL.revokeObjectURL(preview); }, [preview]);
   const saveName = async (event) => { event.preventDefault(); const value = name.trim(); if (value.length < 2 || value.length > 80) return setError('Store name must be between 2 and 80 characters.'); setSaving(true); setError(''); try { const { data, error: rpcError } = await supabase.rpc('save_store_onboarding', { p_store_name: value }); if (rpcError) throw rpcError; setStore(data); } catch (err) { setError(err.message || 'Could not save the store name.'); } finally { setSaving(false); } };
   const chooseFile = async ({ target }) => { const selected = target.files?.[0]; if (!selected) return; setError(''); setWarning(''); if (!allowedTypes.includes(selected.type)) return setError('Use a PNG or JPG image.'); if (selected.size > 5 * 1024 * 1024) return setError('Logo must be 5 MB or smaller.'); const url = URL.createObjectURL(selected); try { const bitmap = await createImageBitmap(selected); const lowResolution = bitmap.width < 200 || bitmap.height < 200; bitmap.close?.(); if (lowResolution) setWarning('For the clearest result, use an image at least 200 × 200 pixels.'); const extracted = await extractLogoPalette(selected); setFile(selected); setPreview(url); setPalette(extracted); setVariation(0); setTheme(themeFromPalette(extracted, 0)); } catch { URL.revokeObjectURL(url); setError('The image could not be read. Choose another PNG or JPG.'); } };
