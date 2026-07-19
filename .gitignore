@@ -25,3 +25,23 @@ dist-ssr
 *.hprof
 android-payment-bridge\*.hprof
 *.hprof
+
+# Android generated files
+android-payment-bridge/.gradle/
+android-payment-bridge/.gradle-user-home/
+android-payment-bridge/gradle-user-home/
+android-payment-bridge/app/build/
+android-payment-bridge/build/
+android-payment-bridge/local.properties
+*.hprof
+
+# Android generated files
+android-payment-bridge/.gradle/
+android-payment-bridge/.gradle-user-home/
+android-payment-bridge/gradle-user-home/
+android-payment-bridge/app/build/
+android-payment-bridge/build/
+android-payment-bridge/local.properties
+*.hprof
+android-payment-bridge/.gradle-user-home-serial/
+android-payment-bridge/.gradle-user-home-serial2/
