@@ -1298,31 +1298,34 @@ export default function App() {
       if (request.status === 'succeeded') {
         const orderId = activePaymentOrderIdRef.current || request.order_id;
         if (!orderId) return;
+        const requestSaysOrderCompleted = request.order_status === 'completed';
         const { data: completedOrder, error } = await supabase
           .from('orders')
           .select('*')
           .eq('id', orderId)
           .maybeSingle();
-        if (error) {
+        if (error && !requestSaysOrderCompleted) {
           showNotification(error.message || 'Card payment completed, but order status could not be loaded.', 'info');
           return;
         }
-        if (completedOrder?.status !== 'completed') {
-          showNotification(isArabic ? 'تم تأكيد الدفع، ننتظر إكمال الطلب من الخادم.' : 'Payment confirmed, waiting for the server to complete the order.', 'info');
+        if (completedOrder?.status !== 'completed' && !requestSaysOrderCompleted) {
+          showNotification('Payment confirmed, waiting for the server to complete the order.', 'info');
           return;
         }
         finalized = true;
         activePaymentOrderIdRef.current = null;
-        enqueueAutoReceiptPrint(completedOrder);
+        setShowStripeModal(false);
+        if (completedOrder) {
+          enqueueAutoReceiptPrint(completedOrder);
+        }
 
         if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
           playChime();
         }
         setCart([]);
-        setShowStripeModal(false);
         setActivePaymentOrderId(null);
         setActivePaymentRequestId(null);
-        showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح!" : "Stripe payment successfully completed!");
+        showNotification('Stripe payment successfully completed!');
         return;
       }
       if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
@@ -1351,6 +1354,7 @@ export default function App() {
           id: result.payment_request_id,
           status: result.request_status,
           order_id: result.order_id,
+          order_status: result.order_status,
           failure_code: result.failure_code,
           failure_message: result.failure_message
         });
@@ -3026,12 +3030,12 @@ export default function App() {
 
             <div className="space-y-2">
               <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
-                {isArabic ? "جاري الاتصال بقارئ البطاقات..." : "Connecting to Card Reader..."}
+                {stripeStatus === 'succeeded' ? 'Payment Confirmed' : 'Connecting to Card Reader...'}
               </h3>
               <p className="text-xs text-slate-400 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
-                {isArabic
-                  ? "الرجاء إدخال أو تمرير البطاقة على جهاز BBPOS WisePad 3 لإكمال الدفع."
-                  : "Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader."}
+                {stripeStatus === 'succeeded'
+                  ? 'Closing the payment window now.'
+                  : 'Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader.'}
               </p>
             </div>
 
@@ -3040,7 +3044,6 @@ export default function App() {
             </p>
 
             <div className="flex flex-col gap-2.5 pt-2">
-
               <button
                 onClick={async () => {
                   try {
@@ -3051,11 +3054,11 @@ export default function App() {
                   setActivePaymentOrderId(null);
                   setActivePaymentRequestId(null);
                   activePaymentOrderIdRef.current = null;
-                  showNotification(isArabic ? "تم إلغاء عملية الدفع بالبطاقة" : "Card payment process cancelled", "error");
+                  showNotification('Card payment process cancelled', 'error');
                 }}
                 className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >
-                {isArabic ? "إلغاء الدفع" : "Cancel Payment"}
+                Cancel Payment
               </button>
             </div>
           </div>
