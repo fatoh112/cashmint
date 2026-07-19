@@ -32,7 +32,7 @@ This document provides a complete, updated breakdown of the current architecture
    - The POS does not communicate directly with the Android phone or reader. The flow is: `POS -> Supabase payment request -> Android Bridge -> Stripe reader -> Supabase status update -> POS`.
    - The Android bridge enrols with a single-use Backoffice code, receives a dedicated Supabase Auth session, then sends `bridge_heartbeat` every 20 seconds and listens for payment requests through Realtime plus reconciliation polling.
    - The Card / Visa choice in the POS is enabled only when the server reports an enabled `stripe_android_bridge` configuration and a terminal device with `status = online`, `reader_status = connected`, and a heartbeat no older than 60 seconds. A locally connected reader is not sufficient if the bridge cannot update Supabase.
-   - Android Bridge version **1.0.1** protects the periodic loop from uncaught exceptions and immediately sends a heartbeat after the reader connects. Its source lives in `android-payment-bridge/`; the APK must be rebuilt and installed before the device receives this update.
+   - Android Bridge version **1.0.11** protects the periodic loop from uncaught exceptions, immediately sends a heartbeat after the reader connects, waits for live WisePad processing before finalizing a decline/timeout, and prevents completed final states from replaying the same payment request. Its source lives in `android-payment-bridge/`; the APK must be rebuilt and installed before the device receives Android-side updates.
 4. **Cloud Order Webhook:** HubRise API order webhooks.
 5. **Local Hardware Printing (Epson TM-T20IV & TM-M30):**
    - Sends ePOS-Print XML commands over SOAP POST requests to the local printer IP using a secure HTTPS endpoint (`https://{IP}/cgi-bin/epos/service.cgi`).
@@ -51,7 +51,215 @@ This document provides a complete, updated breakdown of the current architecture
 
 ---
 
-## 2. Database Schema
+## 2. System Process Map
+
+This section describes the runtime processes that move through the whole system. It is the operational view of the architecture: who starts the process, what data moves, which component is authoritative, and where completion is recorded.
+
+### 2.1 Hosted App Startup and Mode Selection
+1. The browser loads the Vite React bundle from the deployed domain.
+2. The app determines its mode from hostname and `VITE_APP_MODE`:
+   - `pos` for cashier terminals.
+   - `store` for store backoffice.
+   - `master` for central SaaS administration.
+3. The matching dashboard is lazy-loaded. POS, Store Backoffice, and Master are intentionally separated at runtime even though they share the same source repository.
+4. On login/account switch, cached terminal and user data is cleared from `localStorage` to prevent one user's store/device state from leaking into another session.
+
+### 2.2 POS Device Activation and Cashier Session
+1. A POS terminal starts at the activation/login screen.
+2. The cashier enters a device activation code.
+3. The browser calls `verify_pos_device_activation(code_input)` instead of reading `pos_devices` directly.
+4. Supabase validates that the device exists, belongs to a store, and is active.
+5. The POS stores only the device/session context needed for that terminal.
+6. The terminal sends periodic device heartbeats through `touch_pos_device(device_uuid)`.
+7. If the device is revoked or deleted, the POS receives a Realtime event or detects it through polling, closes the local session, and logs out.
+8. Cashier shifts are tracked in `cashier_sessions`; sales totals are accumulated from completed orders, not from local-only browser state.
+
+### 2.3 Catalog Loading and Menu State
+1. The POS asks Supabase for the active device's catalog through `get_pos_catalog(device_uuid)`.
+2. Supabase returns only tenant-owned categories, products, modifiers, and related option data for the active device's store.
+3. The browser renders the menu and maintains the cart locally for speed.
+4. Cart totals shown in the browser are a preview. Final prices, coupons, VAT, receipt numbers, and accounting snapshots are calculated server-side during checkout.
+
+### 2.4 Cash Checkout
+1. The cashier chooses cash.
+2. The POS sends the cart, order type, coupon code, cashier/device context, and payment method to `create_accounting_order`.
+3. The RPC reloads products/modifiers from the database, validates ownership, resolves VAT from Accounting Group -> Tax Profile -> Tax Rate, applies the coupon, and verifies totals.
+4. The RPC creates:
+   - `orders` row with immutable receipt/order snapshots.
+   - `order_items` rows with immutable product/tax snapshots.
+   - `payments` row marked successful for cash.
+   - updated receipt counter.
+5. The browser receives the completed order and starts the receipt printing process.
+6. Cash orders can complete without Stripe because the server-side accounting RPC is the final authority for cash settlement.
+
+### 2.5 Stripe Terminal Card Checkout Overview
+Card checkout is split across the POS browser, Supabase, the Android bridge, Stripe Terminal, Stripe webhook, and printer. The browser never talks directly to the WisePad 3 and never marks a card order paid by itself.
+
+High-level flow:
+
+```mermaid
+sequenceDiagram
+    participant POS as Cashier POS (iPad/browser)
+    participant DB as Supabase DB/RPC
+    participant Fn as Supabase Edge Functions
+    participant Android as Android Bridge
+    participant Reader as WisePad 3
+    participant Stripe as Stripe Terminal/API
+    participant Webhook as Stripe Webhook
+    participant Printer as Epson Printer
+
+    POS->>DB: create pending accounting order + payment_request
+    Android->>DB: heartbeat + availability
+    Android->>DB: claim_terminal_payment_request
+    Android->>Fn: create-terminal-payment-intent
+    Fn->>Stripe: create PaymentIntent server-side
+    Android->>Stripe: retrievePaymentIntent
+    Android->>Reader: collectPaymentMethod
+    Android->>Stripe: processPayment
+    Android->>DB: status unknown, waiting for webhook
+    Stripe->>Webhook: payment_intent.succeeded/canceled/failed
+    Webhook->>DB: complete/cancel order and payment_request
+    DB-->>POS: Realtime/polling status update
+    POS->>Printer: print receipt only after confirmed completion
+```
+
+### 2.6 Card Availability Process
+1. A Backoffice or deployment process configures `restaurant_payment_configs` with the active `stripe_android_bridge` provider and non-secret Stripe routing data such as `stripe_location_id`.
+2. The Android bridge must be enrolled, authenticated, connected to the WisePad 3, and sending heartbeat updates.
+3. `bridge_heartbeat` updates `terminal_devices.status`, `reader_status`, `last_heartbeat_at`, app version, and current active payment request ID.
+4. The POS calls `terminal_payment_availability` on startup and periodically.
+5. The Visa/Card button is enabled only when Supabase reports:
+   - active `stripe_android_bridge` configuration.
+   - online terminal device.
+   - connected reader.
+   - fresh heartbeat, normally within 60 seconds.
+6. If Realtime is blocked, unavailable, or returns 403, REST polling remains the fallback. Card availability and payment reconciliation must not depend on Realtime alone.
+
+### 2.7 Android Bridge Enrollment Process
+1. An authorized Backoffice user generates an enrollment code through `create-terminal-enrollment-code`.
+2. The code is short-lived and intended for provisioning the Android bridge without sharing store staff credentials.
+3. The Android bridge opens its enrollment UI and submits:
+   - Supabase URL.
+   - Supabase anon key.
+   - enrollment code.
+   - display name.
+4. `register-terminal-device` redeems the code, validates the mapped restaurant/location/configuration, creates or updates the `terminal_devices` row, and returns a dedicated Supabase Auth session to the Android app.
+5. Android stores the bridge session in encrypted local storage via `BridgeCredentials`.
+6. After enrollment, Android can refresh its own session without exposing any Stripe secret key or Supabase service-role key.
+7. Reset enrollment clears the local bridge credentials and requires a fresh code before the bridge can operate again.
+
+### 2.8 WisePad 3 Discovery and Connection Process
+1. The operator turns on the WisePad 3 and keeps it near the Android phone.
+2. Android initializes Stripe Terminal SDK with a server-generated connection token from `terminal-connection-token`.
+3. The bridge uses physical WisePad 3 discovery only; the simulated reader path is not part of live operation.
+4. The operator taps `Discover / reconnect WisePad 3`.
+5. Android discovers available Bluetooth readers and connects to the first valid Stripe reader for the configured Stripe Terminal location.
+6. When the reader connects, Android marks `reader_status = connected` through heartbeat.
+7. If Stripe reports an already-connected/stale reader state, Android attempts a safe disconnect/reconnect path.
+8. If discovery is cancelled by the user, the app reports cancellation but does not create or replay any payment.
+
+### 2.9 Card Payment Request Creation
+1. The cashier builds a cart and chooses Visa/Card.
+2. The browser creates a pending accounting order and a `payment_requests` row. Amount, currency, restaurant, location, order ID, and payment configuration are server-derived.
+3. The browser shows a payment modal instructing the customer to use the WisePad 3.
+4. The POS waits for server-confirmed status changes through Realtime and polling.
+5. The POS does not mark the order as paid, even if the Android bridge reports local SDK success.
+
+### 2.10 Atomic Claim and One Active Payment
+1. The Android bridge periodically checks for eligible `payment_requests` for its assigned location.
+2. The bridge uses `claim_terminal_payment_request` to atomically claim one request.
+3. The claim RPC prevents two bridge devices from processing the same request.
+4. Android stores the active request ID locally while processing.
+5. The bridge keeps one payment active at a time. New pending requests wait until the active request is released, completed, failed, cancelled, or expires.
+
+### 2.11 PaymentIntent Creation and Reader Collection
+1. After claiming a request, Android calls `create-terminal-payment-intent`.
+2. The Edge Function loads the request and configuration, derives amount/currency/server metadata, and creates a Stripe PaymentIntent using server-side credentials.
+3. The function stores the Stripe PaymentIntent ID and client secret on `payment_requests`.
+4. Android retrieves the PaymentIntent using Stripe Terminal SDK.
+5. Android calls `collectPaymentMethod`, which moves interaction to the WisePad 3 screen.
+6. The customer taps, inserts, or swipes the card/Apple Pay on the WisePad 3.
+7. Android then calls `processPayment`.
+8. After SDK processing returns success, Android marks the request `unknown` and waits for Stripe webhook confirmation. This prevents Android from being the final payment authority.
+
+### 2.12 Webhook Confirmation and Order Completion
+1. Stripe sends webhook events to `stripe-terminal-webhook`.
+2. The webhook verifies the event with the Stripe webhook secret.
+3. The webhook retrieves/verifies the PaymentIntent status from Stripe before changing order state.
+4. For `succeeded`, the webhook calls the accounting completion path and marks:
+   - `payment_requests.status = succeeded`.
+   - related `payments.status = succeeded`.
+   - related `orders.status = completed`.
+5. For `canceled`, the webhook marks the request/order payment path cancelled without marking the order paid.
+6. For `requires_payment_method`, the webhook marks the request `failed`. It does not put the request back into `waiting_for_card`, because that would replay the same amount and cause loops.
+7. The POS sees the server-confirmed final status and closes the card modal.
+8. Receipt printing starts only after the order is server-confirmed as completed.
+
+### 2.13 Cancellation, Decline, Timeout, and Unknown-State Recovery
+1. If the cashier cancels from the POS or Android, `cancel-terminal-payment` requests cancellation through Stripe when a PaymentIntent exists.
+2. The cancel function then updates `payment_requests.status = cancelled` unless the request has already succeeded.
+3. Android also cancels any active Stripe Terminal SDK operation when it has a local cancelable operation.
+4. If a card is declined or the reader times out, Stripe may return `requires_payment_method`.
+5. Android version 1.0.11 does not treat a transient `requires_payment_method` response as final while the WisePad 3 is still processing; it waits for repeated reconciliation before marking the request failed.
+6. The bridge does not automatically call `collectPaymentMethod` again for the same request.
+7. The cashier must press Visa/Card again to create a new payment request if the customer wants another attempt.
+8. If Android or the network crashes after processing, `retrieve-terminal-payment-status` and the webhook reconcile the PaymentIntent state so the system does not rely on local app memory.
+
+### 2.14 Receipt Printing Process
+1. The POS prints only after a completed order exists in Supabase.
+2. The primary printer path sends Epson ePOS-Print XML to the configured local printer endpoint.
+3. The print payload includes receipt lines, totals, VAT, payment method, and cash drawer pulse commands where applicable.
+4. Automatic production receipt printing should use direct Epson ePOS where possible and avoid browser print prompts.
+5. If direct ePOS fails and fallback is allowed, the browser renders a hidden iframe receipt and calls `window.print()`. That fallback can show the iPad print popup and depends on browser/iOS print behavior.
+6. Manual test print and reprint flows may intentionally open browser print UI depending on the selected print path.
+7. Printing is downstream of payment confirmation: a failed printer does not mark a payment failed, and a successful payment should remain recorded even if receipt printing needs retry.
+
+### 2.15 Realtime, Polling, and Recovery Loops
+1. Realtime is used for fast UI and bridge updates.
+2. REST polling is always retained as fallback because mobile networks, browser WebSockets, and Supabase Realtime permissions can fail.
+3. The Android bridge loop runs every 20 seconds and is protected from uncaught exceptions so one failure does not kill future heartbeats or reconciliation.
+4. The POS also refreshes availability and order/payment status periodically.
+5. Final statuses (`succeeded`, `failed`, `cancelled`, `expired`) must release local active state and must not be reclaimed.
+6. Non-final uncertain statuses are reconciled through Stripe status lookup and webhook verification, not by creating duplicate charges.
+
+### 2.16 Backoffice Administration Processes
+1. Store users manage catalog, categories, products, modifiers, combo components, tax profiles, payment settings, printer settings, coupons, and onboarding.
+2. Catalog edits are tenant-scoped through RLS.
+3. Tax settings must be complete before checkout; the server rejects checkout if a product cannot resolve a valid accounting group/profile/rate.
+4. Backoffice can generate Android bridge enrollment codes but does not expose Stripe secret keys.
+5. Test print validates the configured local printer path independently from payment success.
+
+### 2.17 Master/Superadmin Processes
+1. Master mode loads central dashboards for platform administration.
+2. Superadmin user management uses service-role Edge Functions rather than exposing service-role credentials to the browser.
+3. Superadmin catalog tools can manage tenant catalog data through controlled admin UI paths.
+4. Global system settings, maintenance mode, and platform analytics are managed outside the POS cashier flow.
+
+### 2.18 AI and Import Processes
+1. The AI menu assistant accepts image/PDF input from Backoffice, sends it to the `ai-menu-assistant` Edge Function, and returns structured categories/products/options.
+2. The browser reviews and inserts generated catalog records through normal tenant-scoped APIs.
+3. The AI business analyst calls `ai-business-analyst`, which scopes analysis to either the mapped store or superadmin platform view.
+4. CSV import sanitizes delimiter and price formatting locally, then inserts structured catalog rows for the mapped tenant.
+
+### 2.19 Accounting Export and Daily Closing Process
+1. Completed orders write immutable order, payment, tax, product, and receipt snapshots.
+2. Accountant exports read tenant-scoped views for sales transactions, VAT summaries, and payment summaries.
+3. Daily closing creates an immutable snapshot for a store/day and locks the summarized numbers for accountant review.
+4. Historical orders are not rewritten when catalog names, prices, tax profiles, or products later change.
+
+### 2.20 Deployment Process
+1. Frontend builds are mode-specific:
+   - `npm run build:pos` for the POS domain.
+   - `npm run build:store` for store backoffice.
+   - `npm run build:master` for central SaaS.
+2. Supabase Edge Function changes must be deployed with `npx supabase@latest functions deploy <function-name> --project-ref <project-ref>`.
+3. Database changes require reviewed migrations; do not use `db push` against divergent production history.
+4. Android bridge changes require rebuilding the APK and installing it on the Android phone through ADB or another controlled installation process.
+5. Runtime payment fixes often need both APK installation and Edge Function deployment; frontend redeploy is needed only when browser source or production build artifacts changed.
+
+---
+
+## 3. Database Schema
 
 The database is built on PostgreSQL inside Supabase. Table structures are defined by migrations in `supabase/migrations/`. Below is the entity relationship diagram representing the primary tables:
 
@@ -106,7 +314,7 @@ The accounting migration also adds immutable receipt, payment, cashier/device, c
 
 For a Combo/Bundle, `product_bundle_components` expands the sellable combo into component order lines. The server allocates the combo price using each component's reference price multiplied by its `allocation_weight`, resolves VAT per component, and saves the component's tax/accounting snapshots plus bundle ID, bundle name, and allocation-weight snapshot. This keeps mixed-VAT bundles correct even after the catalog or tax setup changes.
 
-### 2.1 Database Migrations
+### 3.1 Database Migrations
 
 The database structure evolves incrementally through version-controlled SQL files located in `supabase/migrations/`:
 
@@ -153,7 +361,7 @@ The database structure evolves incrementally through version-controlled SQL file
 
 ---
 
-## 3. Directory File Structure
+## 4. Directory File Structure
 
 The project has the following file structure:
 
@@ -277,7 +485,7 @@ cashpilot/
 
 ```
 android-payment-bridge/
-├── app/build.gradle.kts                         # Android application, Stripe Terminal dependencies, version 1.0.1
+├── app/build.gradle.kts                         # Android application, Stripe Terminal dependencies, version 1.0.11
 └── app/src/main/java/com/cashmint/paymentbridge/
     ├── MainActivity.kt                          # Enrollment UI, reader discovery, payment execution
     ├── BridgeWorker.kt                          # Heartbeat, Realtime subscription, reconciliation loop
@@ -285,7 +493,7 @@ android-payment-bridge/
     └── BridgeCredentials.kt                     # Encrypted local bridge-session storage
 ```
 
-## 4. Key Code Implementations & Core Logic
+## 5. Key Code Implementations & Core Logic
 
 ### A. Cashier Interface, Stripe Terminal, & Cart Calculations (`src/App.jsx`)
 `App.jsx` handles checkout, Stripe BBPOS WisePad 3 modal overlays, real-time Postgres webhook listeners, language translations, chime generation, cashier shift sessions, POS device status subscriptions, and the PIN gate.
@@ -605,7 +813,7 @@ Coordinates advanced option configurations and AI menu imports.
 - Implements auto-detection of delimiters (supporting commas, semicolons, etc.) and price string sanitization (handling comma/dot decimal conventions).
 - Prefixes a UTF-8 BOM byte sequence when downloading the CSV template. This guarantees correct character encoding and formatting when the file is opened in Microsoft Excel.
 
-## 5. Summary of Development Milestones
+## 6. Summary of Development Milestones
 
 1. **Authentication & Multi-Tenant Setup:** Role-based POS gateway (Admin/Cashier) with row-level security (RLS).
 2. **Store-Level First-Login Onboarding:** Added a blocking, persisted two-step setup flow for assigned stores: public-name confirmation followed by logo upload and accessible palette-derived branding. Browser onboarding does not create stores or memberships.

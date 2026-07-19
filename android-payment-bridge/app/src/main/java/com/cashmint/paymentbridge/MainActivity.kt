@@ -76,6 +76,8 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private var isStoppingDiscoveryForConnect = false
     private var retryDiscoveryOnResume = false
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val paymentConfirmationPollLimit = 90
+    private val requiresPaymentMethodFinalAfterAttempt = 12
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         if (results.values.all { it }) prepareReaderDiscovery() else showMissingPermissions()
@@ -549,6 +551,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                         ConfirmPaymentIntentConfiguration.Builder().build(),
                                         object : PaymentIntentCallback {
                                             override fun onSuccess(result: PaymentIntent) {
+                                                paymentCancelable = null
                                                 BridgeWorker.markUnknownUntilWebhook(requestId)
                                                 activeRequestId = null
                                                 runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nAwaiting Stripe webhook confirmation."; renderDiagnostics() }
@@ -572,6 +575,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun failOrReconcile(requestId: String, error: Throwable) {
+        paymentCancelable = null
         if (locallyCancelledRequests.contains(requestId)) {
             BridgeWorker.markCancelled(requestId)
             activeRequestId = null
@@ -585,13 +589,13 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                     activeRequestId = null
                     runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
                 } else if (status.optString("status") == "requires_payment_method") {
-                    BridgeWorker.markFailed(requestId, "Payment timed out or was declined. Start a new card payment from the cashier.")
-                    activeRequestId = null
+                    BridgeWorker.markFailureOrUnknown(requestId, error)
                     runOnUiThread {
-                        paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment timed out or was declined. Start a new card payment from the cashier."
+                        paymentDetails.text = "Payment request: $requestId\nState: reconciling\nReader may still be processing. Waiting for Stripe confirmation."
                         retryButton.isEnabled = false
                         renderDiagnostics()
                     }
+                    pollStripeCompletion(requestId)
                 } else {
                     BridgeWorker.markFailureOrUnknown(requestId, error)
                     pollStripeCompletion(requestId)
@@ -606,10 +610,12 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun pollStripeCompletion(requestId: String, attempt: Int = 0) {
-        if (attempt >= 30) {
+        if (attempt >= paymentConfirmationPollLimit) {
+            BridgeWorker.markFailed(requestId, "Payment confirmation timed out. Check Stripe Dashboard and order history before trying again.")
+            activeRequestId = null
             runOnUiThread {
-                paymentDetails.text = "Payment request: $requestId\nState: awaiting confirmation\nCheck cashier order history before retrying."
-                retryButton.isEnabled = true
+                paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment confirmation timed out. Check Stripe Dashboard and order history before trying again."
+                retryButton.isEnabled = false
                 renderDiagnostics()
             }
             return
@@ -640,12 +646,21 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                 BridgeWorker.markCancelled(requestId)
                                 return@onSuccess
                             }
-                            BridgeWorker.markFailed(requestId, "Payment timed out or was declined. Start a new card payment from the cashier.")
-                            activeRequestId = null
-                            runOnUiThread {
-                                paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment timed out or was declined. Start a new card payment from the cashier."
-                                retryButton.isEnabled = false
-                                renderDiagnostics()
+                            if (attempt >= requiresPaymentMethodFinalAfterAttempt && !terminalStillProcessing()) {
+                                BridgeWorker.markFailed(requestId, "Payment timed out or was declined. Start a new card payment from the cashier.")
+                                activeRequestId = null
+                                runOnUiThread {
+                                    paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment timed out or was declined. Start a new card payment from the cashier."
+                                    retryButton.isEnabled = false
+                                    renderDiagnostics()
+                                }
+                            } else {
+                                runOnUiThread {
+                                    paymentDetails.text = "Payment request: $requestId\nState: processing\nWisePad 3 is still processing. Do not start another payment."
+                                    retryButton.isEnabled = false
+                                    renderDiagnostics()
+                                }
+                                pollStripeCompletion(requestId, attempt + 1)
                             }
                         }
                         "canceled" -> {
@@ -662,6 +677,13 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                 }.onFailure { pollStripeCompletion(requestId, attempt + 1) }
             }
         }, 2_000L)
+    }
+
+    private fun terminalStillProcessing(): Boolean {
+        if (paymentCancelable != null) return true
+        if (!Terminal.isInitialized()) return false
+        val paymentStatus = Terminal.getInstance().paymentStatus.toString()
+        return paymentStatus.contains("WAITING", ignoreCase = true) || paymentStatus.contains("PROCESS", ignoreCase = true)
     }
 
     private fun cancelActivePayment() {
@@ -775,7 +797,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.10" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.11" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }

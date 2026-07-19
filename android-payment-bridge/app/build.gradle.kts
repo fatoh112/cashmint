@@ -1,7 +1,7 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 
 android { namespace = "com.cashmint.paymentbridge"; compileSdk = 35
-    defaultConfig { applicationId = "com.cashmint.paymentbridge"; minSdk = 26; targetSdk = 35; versionCode = 11; versionName = "1.0.10" }
+    defaultConfig { applicationId = "com.cashmint.paymentbridge"; minSdk = 26; targetSdk = 35; versionCode = 12; versionName = "1.0.11" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }
     kotlinOptions { jvmTarget = "1.8" }
 }

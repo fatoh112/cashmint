@@ -80,7 +80,7 @@ object BridgeWorker {
         api.rpc("bridge_heartbeat", JSONObject()
             .put("p_reader_status", readerStatus)
             .put("p_current_payment_request_id", credentials.activeRequestId().ifBlank { JSONObject.NULL })
-            .put("p_app_version", "1.0.10")) { result ->
+            .put("p_app_version", "1.0.11")) { result ->
             result.onSuccess { lastHeartbeat = java.text.DateFormat.getTimeInstance().format(java.util.Date()) }
                 .onFailure { lastError = "Heartbeat failed: ${it.message}" }
         }
