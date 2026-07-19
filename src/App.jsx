@@ -1178,14 +1178,12 @@ export default function App() {
               const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
               const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
               if (localPrinterIP && autoPrint) {
-                printReceipt(payload.new, localPrinterIP, store ? store.name : 'Cashmint').then(res => {
+                printReceipt(payload.new, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
                   if (!res.success) {
                     showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
                   } else {
                     showNotification(
-                      res.fallback
-                        ? (isArabic ? "تم فتح نافذة الطباعة للفاتورة 🖨️" : "Receipt fallback print window opened 🖨️")
-                        : (isArabic ? "تم إرسال الطلب للطابعة بنجاح 🖨️" : "Receipt printed successfully 🖨️")
+                      isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully"
                     );
                   }
                 });
@@ -1296,14 +1294,12 @@ export default function App() {
             const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
             const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
             if (localPrinterIP && autoPrint) {
-              printReceipt(completedOrder, localPrinterIP, store ? store.name : 'Cashmint').then(res => {
+              printReceipt(completedOrder, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
                 if (!res.success) {
                   showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
                 } else {
                   showNotification(
-                    res.fallback
-                      ? (isArabic ? "تم فتح نافذة الطباعة للفاتورة" : "Receipt fallback print window opened")
-                      : (isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully")
+                    isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully"
                   );
                 }
               });
@@ -1661,14 +1657,12 @@ export default function App() {
       } else {
         const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
         if (printerIP && autoPrint) {
-          printReceipt(createdOrder, printerIP, store ? store.name : 'Cashmint').then(res => {
+          printReceipt(createdOrder, printerIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
             if (!res.success) {
               showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
             } else {
               showNotification(
-                res.fallback
-                  ? (isArabic ? "تم فتح نافذة الطباعة للفاتورة 🖨️" : "Receipt fallback print window opened 🖨️")
-                  : (isArabic ? "تم إرسال الطلب للطابعة بنجاح 🖨️" : "Receipt printed successfully 🖨️")
+                isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully"
               );
             }
           });
