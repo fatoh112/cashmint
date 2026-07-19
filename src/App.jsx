@@ -1327,17 +1327,28 @@ export default function App() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
         handlePaymentRequestUpdate(request);
       }).subscribe();
-    const poll = setInterval(async () => {
+    const pollPaymentResult = async () => {
       if (finalized) return;
-      const { data, error } = await supabase
-        .from('payment_requests')
-        .select('id,status,order_id,failure_message')
-        .eq('id', activePaymentRequestId)
-        .maybeSingle();
-      if (!error) await handlePaymentRequestUpdate(data);
-    }, 2500);
+      const posDeviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+      const { data, error } = await supabase.rpc('terminal_payment_result_for_pos', {
+        p_payment_request_id: activePaymentRequestId,
+        p_pos_device_id: posDeviceId
+      });
+      const result = Array.isArray(data) ? data[0] : data;
+      if (!error && result) {
+        await handlePaymentRequestUpdate({
+          id: result.payment_request_id,
+          status: result.request_status,
+          order_id: result.order_id,
+          failure_code: result.failure_code,
+          failure_message: result.failure_message
+        });
+      }
+    };
+    pollPaymentResult();
+    const poll = setInterval(pollPaymentResult, 2500);
     return () => { clearInterval(poll); supabase.removeChannel(channel); };
-  }, [activePaymentRequestId, isArabic]);
+  }, [activePaymentRequestId, isArabic, deviceAuth?.deviceId]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
