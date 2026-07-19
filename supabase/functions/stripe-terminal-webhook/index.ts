@@ -39,6 +39,8 @@ Deno.serve(async (req) => {
       await db.from('payment_requests').update({ status: 'succeeded', failure_code: null, failure_message: null, updated_at: new Date().toISOString() }).eq('id', request.id)
       const { error } = await db.rpc('complete_accounting_card_payment', { p_order_id: request.order_id, p_provider_reference: verified.id, p_processor_fee: 0 })
       if (error) throw error
+    } else if (['cancel_requested', 'cancelled'].includes(request.status)) {
+      await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment cancelled.', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else if (verified.status === 'canceled') {
       await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? null, updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else if (verified.status === 'requires_payment_method') {

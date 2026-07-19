@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private var paymentCancelable: Cancelable? = null
     private var activeRequestId: String? = null
     private var lastClaimedRequestId: String? = null
+    private val locallyCancelledRequests = mutableSetOf<String>()
     private var lastReader: Reader? = null
     private var isDiscovering = false
     private var isConnectingReader = false
@@ -523,6 +524,10 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun onClaimedPaymentRequest(requestId: String) {
+        if (locallyCancelledRequests.contains(requestId)) {
+            BridgeWorker.release(requestId)
+            return
+        }
         activeRequestId = requestId
         lastClaimedRequestId = requestId
         runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: claimed / creating_payment_intent"; retryButton.isEnabled = false }
@@ -567,9 +572,19 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun failOrReconcile(requestId: String, error: Throwable) {
+        if (locallyCancelledRequests.contains(requestId)) {
+            BridgeWorker.markCancelled(requestId)
+            activeRequestId = null
+            runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            return
+        }
         api.status(requestId) { result ->
             result.onSuccess { status ->
-                if (status.optString("status") == "requires_payment_method") {
+                if (locallyCancelledRequests.contains(requestId) || status.optString("status") == "cancel_requested" || status.optString("status") == "cancelled") {
+                    BridgeWorker.markCancelled(requestId)
+                    activeRequestId = null
+                    runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+                } else if (status.optString("status") == "requires_payment_method") {
                     BridgeWorker.markWaiting(requestId)
                     runOnUiThread {
                         paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPrevious attempt timed out or was declined. Present the card again."
@@ -611,7 +626,20 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                 renderDiagnostics()
                             }
                         }
+                        "cancel_requested", "cancelled" -> {
+                            BridgeWorker.markCancelled(requestId)
+                            activeRequestId = null
+                            runOnUiThread {
+                                paymentDetails.text = "Payment request: $requestId\nState: cancelled"
+                                retryButton.isEnabled = false
+                                renderDiagnostics()
+                            }
+                        }
                         "requires_payment_method" -> {
+                            if (locallyCancelledRequests.contains(requestId)) {
+                                BridgeWorker.markCancelled(requestId)
+                                return@onSuccess
+                            }
                             BridgeWorker.markWaiting(requestId)
                             runOnUiThread {
                                 paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPrevious attempt timed out or was declined. Present the card again."
@@ -641,27 +669,48 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             status.text = "No active payment to cancel."
             return
         }
+        locallyCancelledRequests.add(requestId)
+        activeRequestId = null
+        retryButton.isEnabled = false
+        paymentDetails.text = "Payment request: $requestId\nState: cancelling"
         api.cancelPayment(requestId) { }
-        paymentCancelable?.cancel(object : Callback {
+        val cancelable = paymentCancelable
+        paymentCancelable = null
+        if (cancelable == null) {
+            BridgeWorker.markCancelled(requestId)
+            runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            return
+        }
+        cancelable.cancel(object : Callback {
             override fun onSuccess() {
                 BridgeWorker.markCancelled(requestId)
-                activeRequestId = null
                 runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false }
             }
-            override fun onFailure(e: TerminalException) { runOnUiThread { status.text = "Cancel failed: ${e.errorCode}" } }
+            override fun onFailure(e: TerminalException) {
+                BridgeWorker.markCancelled(requestId)
+                runOnUiThread { status.text = "Cancel requested: ${e.errorCode}"; paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            }
         })
     }
 
     private fun onCancelRequested(requestId: String) {
-        paymentCancelable?.cancel(object : Callback {
+        locallyCancelledRequests.add(requestId)
+        activeRequestId = null
+        val cancelable = paymentCancelable
+        paymentCancelable = null
+        if (cancelable == null) {
+            BridgeWorker.markCancelled(requestId)
+            runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
+            return
+        }
+        cancelable.cancel(object : Callback {
             override fun onSuccess() {
                 BridgeWorker.markCancelled(requestId)
-                activeRequestId = null
                 runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false }
             }
             override fun onFailure(e: TerminalException) {
-                BridgeWorker.markFailureOrUnknown(requestId, e)
-                runOnUiThread { status.text = "Cancel requested; state unknown: ${e.errorCode}" }
+                BridgeWorker.markCancelled(requestId)
+                runOnUiThread { status.text = "Cancel requested: ${e.errorCode}"; paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
             }
         })
     }
@@ -725,7 +774,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.8" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.9" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }
