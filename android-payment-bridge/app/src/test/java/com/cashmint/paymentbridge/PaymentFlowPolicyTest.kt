@@ -58,4 +58,34 @@ class PaymentFlowPolicyTest {
         assertEquals(2_000L, PaymentFlowPolicy.pollDelayMs(15_000L))
         assertEquals(5_000L, PaymentFlowPolicy.pollDelayMs(15_001L))
     }
+
+    @Test fun processTimeoutCancelsProcessCancelable() {
+        assertEquals(ReaderActionState.CANCELLING, PaymentFlowPolicy.timeoutAction(ReaderActionState.PROCESSING))
+    }
+
+    @Test fun collectTimeoutCancelsCollectCancelable() {
+        assertEquals(ReaderActionState.CANCELLING, PaymentFlowPolicy.timeoutAction(ReaderActionState.COLLECTING))
+    }
+
+    @Test fun cancellationWaitsBeforeMarkingIdle() {
+        assertEquals(ReaderActionState.RECOVERING, PaymentFlowPolicy.timeoutAction(ReaderActionState.CANCELLING))
+    }
+
+    @Test fun failedCancelTriggersDisconnectReconnectRecovery() {
+        assertEquals(ReaderActionState.REBOOTING, PaymentFlowPolicy.timeoutAction(ReaderActionState.RECOVERING))
+    }
+
+    @Test fun noNewPaymentAcceptedDuringRecoveryOrReboot() {
+        assertFalse(PaymentFlowPolicy.shouldAcceptNewPayment(ReaderActionState.RECOVERING, false))
+        assertFalse(PaymentFlowPolicy.shouldAcceptNewPayment(ReaderActionState.REBOOTING, false))
+    }
+
+    @Test fun noNewPaymentAcceptedWhileSdkCancelableIsActive() {
+        assertFalse(PaymentFlowPolicy.shouldAcceptNewPayment(ReaderActionState.IDLE, true))
+    }
+
+    @Test fun finalReaderStateCanAcceptPaymentsOnlyWhenConnectedSideIsIdleAndNoCancelable() {
+        assertTrue(PaymentFlowPolicy.shouldAcceptNewPayment(ReaderActionState.IDLE, false))
+        assertFalse(PaymentFlowPolicy.shouldAcceptNewPayment(ReaderActionState.PROCESSING, false))
+    }
 }

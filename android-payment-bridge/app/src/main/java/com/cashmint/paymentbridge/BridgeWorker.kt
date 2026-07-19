@@ -35,13 +35,15 @@ object BridgeWorker {
     private var onClaimed: ((String) -> Unit)? = null
     private var onCancel: ((String) -> Unit)? = null
     private var onServerIdle: (() -> Unit)? = null
+    private var hasActiveSdkOperation: (() -> Boolean)? = null
 
-    fun start(context: Context, client: BridgeApi, claimed: (String) -> Unit, cancelled: (String) -> Unit = {}, serverIdle: () -> Unit = {}) {
+    fun start(context: Context, client: BridgeApi, claimed: (String) -> Unit, cancelled: (String) -> Unit = {}, serverIdle: () -> Unit = {}, sdkBusy: () -> Boolean = { false }) {
         credentials = BridgeCredentials(context.applicationContext)
         api = client
         onClaimed = claimed
         onCancel = cancelled
         onServerIdle = serverIdle
+        hasActiveSdkOperation = sdkBusy
         if (!credentials.enrolled()) return
         if (RealtimeRuntimePolicy.shouldStartPollingLoop(started.get()) && started.compareAndSet(false, true)) {
             // Never let an unexpected bridge/network exception stop the periodic
@@ -101,7 +103,7 @@ object BridgeWorker {
             .put("p_reader_status", readerStatus)
             .put("p_reader_action_status", readerActionStatus.name.lowercase())
             .put("p_current_payment_request_id", credentials.activeRequestId().ifBlank { JSONObject.NULL })
-            .put("p_app_version", "1.0.15")) { result ->
+            .put("p_app_version", "1.0.16")) { result ->
             result.onSuccess { lastHeartbeat = java.text.DateFormat.getTimeInstance().format(java.util.Date()) }
                 .onFailure { lastError = "Heartbeat failed: ${it.message}" }
         }
@@ -118,7 +120,7 @@ object BridgeWorker {
                     .getOrDefault(ReaderActionState.IDLE)
                 val serverReader = device.optString("reader_status", readerStatus).ifBlank { readerStatus }
                 val serverActive = if (device.isNull("current_payment_request_id")) null else device.optString("current_payment_request_id").ifBlank { null }
-                val local = LocalBridgeSnapshot(credentials.activeRequestId().ifBlank { null }, readerStatus, readerActionStatus, false, busy.get())
+                val local = LocalBridgeSnapshot(credentials.activeRequestId().ifBlank { null }, readerStatus, readerActionStatus, hasActiveSdkOperation?.invoke() == true, busy.get())
                 val server = ServerBridgeSnapshot(serverActive, serverReader, serverAction, null)
                 BridgeStatePolicy.correction(local, server)?.let {
                     credentials.setActiveRequestId(null)
@@ -128,8 +130,12 @@ object BridgeWorker {
                     onServerIdle?.invoke()
                 } ?: run {
                     readerStatus = serverReader
-                    readerActionStatus = serverAction
-                    if (serverActive == null && serverAction == ReaderActionState.IDLE) onServerIdle?.invoke()
+                    if (serverActive == null && serverAction == ReaderActionState.IDLE && local.hasPaymentCancelable) {
+                        onServerIdle?.invoke()
+                    } else {
+                        readerActionStatus = serverAction
+                        if (serverActive == null && serverAction == ReaderActionState.IDLE) onServerIdle?.invoke()
+                    }
                 }
             }.onFailure { lastError = "Server state sync failed: ${it.message}" }
             done?.invoke()

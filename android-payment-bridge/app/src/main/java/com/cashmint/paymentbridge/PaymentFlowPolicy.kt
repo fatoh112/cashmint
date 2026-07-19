@@ -5,7 +5,9 @@ enum class ReaderActionState {
     DISCOVERING,
     COLLECTING,
     PROCESSING,
-    CANCELLING
+    CANCELLING,
+    RECOVERING,
+    REBOOTING
 }
 
 enum class PaymentDecision {
@@ -48,4 +50,14 @@ object PaymentFlowPolicy {
 
     fun pollDelayMs(elapsedSinceUnknownMs: Long): Long =
         if (elapsedSinceUnknownMs <= INITIAL_WEBHOOK_WAIT_MS) ACTIVE_POLL_INTERVAL_MS else UNKNOWN_BACKOFF_POLL_INTERVAL_MS
+
+    fun shouldAcceptNewPayment(readerAction: ReaderActionState, hasActiveSdkOperation: Boolean): Boolean =
+        readerAction == ReaderActionState.IDLE && !hasActiveSdkOperation
+
+    fun timeoutAction(stage: ReaderActionState): ReaderActionState = when (stage) {
+        ReaderActionState.COLLECTING, ReaderActionState.PROCESSING -> ReaderActionState.CANCELLING
+        ReaderActionState.CANCELLING -> ReaderActionState.RECOVERING
+        ReaderActionState.RECOVERING -> ReaderActionState.REBOOTING
+        else -> ReaderActionState.IDLE
+    }
 }

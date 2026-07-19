@@ -50,7 +50,11 @@ Deno.serve(async (req) => {
       await db.from('payment_requests').update({ status: 'unknown', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     }
     if (['succeeded', 'canceled', 'requires_payment_method'].includes(verified.status) && request.claimed_by_device_id) {
-      await db.from('terminal_devices').update({ current_payment_request_id: null, reader_action_status: 'idle', updated_at: new Date().toISOString() }).eq('id', request.claimed_by_device_id)
+      await db.from('terminal_devices').update({
+        current_payment_request_id: null,
+        reader_action_status: verified.status === 'succeeded' ? 'idle' : 'cancelling',
+        updated_at: new Date().toISOString()
+      }).eq('id', request.claimed_by_device_id)
     }
     return json({ received: true })
   } catch (error) { console.error(error); return new Response('Webhook handling failed', { status: 500 }) }

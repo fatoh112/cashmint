@@ -14,7 +14,7 @@ Deno.serve(async (req) => {
     }
     await db.from('payment_requests').update({ status: 'cancelled', failure_code: null, failure_message: null, finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     if (request.claimed_by_device_id) {
-      await db.from('terminal_devices').update({ current_payment_request_id: null, reader_action_status: 'idle', updated_at: new Date().toISOString() }).eq('id', request.claimed_by_device_id)
+      await db.from('terminal_devices').update({ current_payment_request_id: null, reader_action_status: 'cancelling', updated_at: new Date().toISOString() }).eq('id', request.claimed_by_device_id)
     }
     return json({ status: 'cancelled' })
   } catch (error) { return json({ error: error.message }, 400) }

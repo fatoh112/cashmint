@@ -7,13 +7,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BridgeStatePolicyTest {
-    @Test fun localProcessingServerIdleBecomesLocalIdle() {
+    @Test fun localProcessingServerIdleRequiresSdkCancellationFirst() {
         val correction = BridgeStatePolicy.correction(
             LocalBridgeSnapshot("req_1", "connected", ReaderActionState.PROCESSING, hasPaymentCancelable = true, busy = true),
             ServerBridgeSnapshot(null, "connected", ReaderActionState.IDLE, null)
         )
         assertNotNull(correction)
-        assertEquals(ReaderActionState.IDLE, correction!!.readerAction)
+        assertEquals(ReaderActionState.CANCELLING, correction!!.readerAction)
         assertEquals("connected", correction.readerConnection)
         assertTrue(correction.cancelStaleCancelable)
     }
@@ -34,7 +34,7 @@ class BridgeStatePolicyTest {
             ServerBridgeSnapshot(null, "connected", ReaderActionState.IDLE, "failed")
         )
         assertNotNull(correction)
-        assertEquals(ReaderActionState.IDLE, correction!!.readerAction)
+        assertEquals(ReaderActionState.CANCELLING, correction!!.readerAction)
         assertTrue(correction.movePaymentToHistory)
     }
 

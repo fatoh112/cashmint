@@ -34,11 +34,16 @@ object BridgeStatePolicy {
             local.hasPaymentCancelable ||
             local.busy
         if (!needsCorrection) return null
+        val recoveryAction = if (local.hasPaymentCancelable || !local.activeRequestId.isNullOrBlank()) {
+            ReaderActionState.CANCELLING
+        } else {
+            ReaderActionState.IDLE
+        }
         return LocalBridgeCorrection(
             clearActiveRequest = true,
             cancelStaleCancelable = local.hasPaymentCancelable,
             readerConnection = server.readerConnection.ifBlank { local.readerConnection },
-            readerAction = ReaderActionState.IDLE,
+            readerAction = recoveryAction,
             clearBusy = true,
             movePaymentToHistory = serverFinal || !local.activeRequestId.isNullOrBlank()
         )
