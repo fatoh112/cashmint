@@ -31,7 +31,7 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
         http.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = done(Result.failure(e))
+            override fun onFailure(call: Call, e: IOException) = done(Result.failure(IOException("Network error: ${e.message}", e)))
             override fun onResponse(call: Call, response: Response) { response.use { r ->
                 try {
                     val value = JSONObject(r.body?.string().orEmpty())
@@ -69,14 +69,17 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
     }
     private fun safeError(raw: String, status: Int): String = try {
         val value = JSONObject(raw)
-        value.optString("error").takeIf { it.isNotBlank() }
+        val code = value.optString("code").takeIf { it.isNotBlank() }
+        val error = value.optString("error").takeIf { it.isNotBlank() }
             ?: value.optString("message").takeIf { it.isNotBlank() }
             ?: "Request failed"
-    } catch (_: Exception) { "Request failed" }.let { "HTTP $status: $it" }
+        val details = value.optString("details").takeIf { it.isNotBlank() }
+        listOfNotNull("HTTP $status", code, error, details).joinToString(": ")
+    } catch (_: Exception) { "HTTP $status: Request failed" }
 
     private fun <T> call(path: String, body: JSONObject, done: (Result<T>) -> Unit, authenticated: Boolean = true, map: (JSONObject) -> T) {
         http.newCall(request(path, body, authenticated)).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = done(Result.failure(e))
+            override fun onFailure(call: Call, e: IOException) = done(Result.failure(IOException("Network error: ${e.message}", e)))
             override fun onResponse(call: Call, response: Response) { response.use { r ->
                 val raw = r.body?.string().orEmpty()
                 if (!r.isSuccessful) { done(Result.failure(IOException(safeError(raw, r.code)))); return }

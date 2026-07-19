@@ -1,11 +1,16 @@
 package com.cashmint.paymentbridge
 
 import android.Manifest
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -55,6 +60,8 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private lateinit var cancelButton: Button
     private lateinit var reconnectButton: Button
     private lateinit var retryButton: Button
+    private lateinit var locationSettingsButton: Button
+    private lateinit var bluetoothSettingsButton: Button
     private lateinit var clearDiagnosticsButton: Button
     private lateinit var deviceDetails: TextView
     private lateinit var readerDetails: TextView
@@ -65,10 +72,11 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     private var activeRequestId: String? = null
     private var lastClaimedRequestId: String? = null
     private var lastReader: Reader? = null
+    private var retryDiscoveryOnResume = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        initializeTerminal()
+    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        if (results.values.all { it }) prepareReaderDiscovery() else showMissingPermissions()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,6 +102,22 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         cancelButton = Button(this).also { it.text = "Cancel active payment"; it.setOnClickListener { cancelActivePayment() } }
         reconnectButton = Button(this).also { it.text = "Discover / reconnect reader"; it.setOnClickListener { discoverReader(simulatedSwitch.isChecked) } }
         retryButton = Button(this).also { it.text = "Retry safe payment recovery"; it.setOnClickListener { retryActivePayment() } }
+        locationSettingsButton = Button(this).also {
+            it.text = "Open Location Settings"
+            it.visibility = View.GONE
+            it.setOnClickListener {
+                retryDiscoveryOnResume = true
+                startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            }
+        }
+        bluetoothSettingsButton = Button(this).also {
+            it.text = "Open Bluetooth Settings"
+            it.visibility = View.GONE
+            it.setOnClickListener {
+                retryDiscoveryOnResume = true
+                startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+            }
+        }
         clearDiagnosticsButton = Button(this).also { it.text = "Clear diagnostics"; it.setOnClickListener { BridgeWorker.clearDiagnostics(); renderDiagnostics() } }
         resetButton = Button(this).also { it.text = "Reset enrollment"; it.setOnClickListener { resetEnrollment() } }
         deviceDetails = TextView(this)
@@ -101,13 +125,22 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         paymentDetails = TextView(this)
         diagnostics = TextView(this)
         simulatedSwitch.setOnCheckedChangeListener { _, checked -> if (credentials.enrolled()) discoverReader(checked) }
-        listOf(status, supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton, deviceDetails, simulatedSwitch, readerDetails, reconnectButton, paymentDetails, cancelButton, retryButton, diagnostics, clearDiagnosticsButton, resetButton).forEach(root::addView)
+        listOf(status, supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton, deviceDetails, simulatedSwitch, readerDetails, reconnectButton, locationSettingsButton, bluetoothSettingsButton, paymentDetails, cancelButton, retryButton, diagnostics, clearDiagnosticsButton, resetButton).forEach(root::addView)
         setContentView(root)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (retryDiscoveryOnResume && ::credentials.isInitialized && credentials.enrolled()) {
+            retryDiscoveryOnResume = false
+            prepareReaderDiscovery()
+        }
     }
 
     private fun showEnrollment() {
         status.text = "Cashmint payment bridge\nNot enrolled"
         listOf(supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton).forEach { it.visibility = View.VISIBLE }
+        listOf(locationSettingsButton, bluetoothSettingsButton).forEach { it.visibility = View.GONE }
         cancelButton.isEnabled = false
         retryButton.isEnabled = false
         listOf(deviceDetails, readerDetails, paymentDetails, diagnostics, reconnectButton, clearDiagnosticsButton).forEach { it.visibility = View.GONE }
@@ -115,6 +148,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
 
     private fun showDiagnostics() {
         listOf(supabaseUrlInput, anonKeyInput, enrollmentCodeInput, displayNameInput, enrollButton).forEach { it.visibility = View.GONE }
+        listOf(locationSettingsButton, bluetoothSettingsButton).forEach { it.visibility = View.GONE }
         cancelButton.isEnabled = true
         retryButton.isEnabled = credentials.activeRequestId().isNotBlank()
         listOf(deviceDetails, readerDetails, paymentDetails, diagnostics, reconnectButton, clearDiagnosticsButton).forEach { it.visibility = View.VISIBLE }
@@ -141,7 +175,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                 result.onSuccess {
                     credentials.saveEnrollment(it)
                     api = BridgeApi(credentials.supabaseUrl, credentials.anonKey) { credentials.accessToken() }
-                    requestPermissionsIfNeeded()
+                    prepareReaderDiscovery()
                 }.onFailure {
                     status.text = "Enrollment failed: ${it.message}"
                 }
@@ -159,8 +193,76 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun requestPermissionsIfNeeded() {
-        val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (required.any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }) permissions.launch(required) else initializeTerminal()
+        prepareReaderDiscovery()
+    }
+
+    private fun prepareReaderDiscovery() {
+        val missing = missingPermissions()
+        if (missing.isNotEmpty()) {
+            showMissingPermissions(missing)
+            permissions.launch(missing.toTypedArray())
+            return
+        }
+        if (!isLocationEnabled()) {
+            discoveryCancelable?.cancel(emptyCallback)
+            BridgeWorker.readerDisconnected()
+            locationSettingsButton.visibility = View.VISIBLE
+            bluetoothSettingsButton.visibility = View.GONE
+            readerDetails.text = "Reader: blocked\nLocation must be enabled to discover the card reader"
+            status.text = "Location must be enabled to discover the card reader"
+            renderDiagnostics()
+            return
+        }
+        if (!isBluetoothEnabled()) {
+            discoveryCancelable?.cancel(emptyCallback)
+            BridgeWorker.readerDisconnected()
+            locationSettingsButton.visibility = View.GONE
+            bluetoothSettingsButton.visibility = View.VISIBLE
+            readerDetails.text = "Reader: blocked\nBluetooth must be enabled to discover the card reader"
+            status.text = "Bluetooth must be enabled to discover the card reader"
+            renderDiagnostics()
+            return
+        }
+        initializeTerminal()
+    }
+
+    private fun missingPermissions(): List<String> {
+        val required = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            required += Manifest.permission.BLUETOOTH_SCAN
+            required += Manifest.permission.BLUETOOTH_CONNECT
+        }
+        return required.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+    }
+
+    private fun showMissingPermissions(missing: List<String> = missingPermissions()) {
+        locationSettingsButton.visibility = View.GONE
+        bluetoothSettingsButton.visibility = View.GONE
+        val labels = missing.map {
+            when (it) {
+                Manifest.permission.ACCESS_FINE_LOCATION -> "Location permission"
+                Manifest.permission.BLUETOOTH_SCAN -> "Bluetooth scan permission"
+                Manifest.permission.BLUETOOTH_CONNECT -> "Bluetooth connect permission"
+                else -> it
+            }
+        }
+        readerDetails.text = "Reader: blocked\nMissing permission: ${labels.joinToString(", ")}"
+        status.text = "Missing permission: ${labels.joinToString(", ")}"
+        renderDiagnostics()
+    }
+
+    private fun isLocationEnabled(): Boolean {
+        val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            manager.isLocationEnabled
+        } else {
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER) || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+    }
+
+    private fun isBluetoothEnabled(): Boolean {
+        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        return manager.adapter?.isEnabled == true
     }
 
     private fun initializeTerminal() {
@@ -183,8 +285,31 @@ class MainActivity : AppCompatActivity(), TerminalListener {
     }
 
     private fun discoverReader(simulated: Boolean) {
+        val missing = missingPermissions()
+        if (missing.isNotEmpty()) {
+            showMissingPermissions(missing)
+            permissions.launch(missing.toTypedArray())
+            return
+        }
+        if (!isLocationEnabled()) {
+            locationSettingsButton.visibility = View.VISIBLE
+            bluetoothSettingsButton.visibility = View.GONE
+            readerDetails.text = "Reader: blocked\nLocation must be enabled to discover the card reader"
+            status.text = "Location must be enabled to discover the card reader"
+            renderDiagnostics()
+            return
+        }
+        if (!isBluetoothEnabled()) {
+            locationSettingsButton.visibility = View.GONE
+            bluetoothSettingsButton.visibility = View.VISIBLE
+            readerDetails.text = "Reader: blocked\nBluetooth must be enabled to discover the card reader"
+            status.text = "Bluetooth must be enabled to discover the card reader"
+            renderDiagnostics()
+            return
+        }
         discoveryCancelable?.cancel(emptyCallback)
         BridgeWorker.readerDisconnected()
+        listOf(locationSettingsButton, bluetoothSettingsButton).forEach { it.visibility = View.GONE }
         readerDetails.text = "Reader: discovering\nMode: ${if (simulated) "simulated" else "physical WisePad 3"}\nDo not pair this reader in Android Bluetooth settings."
         status.text = "Discovering ${if (simulated) "simulated" else "physical WisePad 3"} reader..."
         val config = DiscoveryConfiguration.BluetoothDiscoveryConfiguration(0, simulated)
@@ -195,7 +320,14 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             }
         }, object : Callback {
             override fun onSuccess() = Unit
-            override fun onFailure(e: TerminalException) { runOnUiThread { status.text = "Reader discovery failed: ${e.errorCode}" } }
+            override fun onFailure(e: TerminalException) {
+                BridgeWorker.readerDisconnected()
+                runOnUiThread {
+                    readerDetails.text = "Reader: discovery failed\nSafe error: ${e.errorCode}"
+                    status.text = "Reader discovery failed: ${e.errorCode}"
+                    renderDiagnostics()
+                }
+            }
         })
     }
 
