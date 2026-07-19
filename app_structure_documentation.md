@@ -7,7 +7,7 @@ This document provides a complete, updated breakdown of the current architecture
 ## 1. System Architecture & Tech Stack
 
 ### Frontend
-- **Core Identity:** Pure Web App (PWA) designed for SaaS scalability. No Native mobile code. No .exe desktop apps.
+- **Core Identity:** React/Vite web application (POS, Store Backoffice, and Master modes), plus a companion native Android payment bridge for Bluetooth Stripe Terminal readers. There is no desktop executable.
 - **Framework:** React.js initialized via Vite.
 - **Styling:** Tailwind CSS with dynamic themes (Light/Dark Mode toggle) and RTL (Arabic-first) UI/UX direction support.
 - **Icons:** `lucide-react` for modern, scalable iconography.
@@ -23,15 +23,18 @@ This document provides a complete, updated breakdown of the current architecture
 - **Serverless Functions:** Supabase Edge Functions (Deno runtime) for API webhooks, AI business analytics, user administration, and menu extraction.
 
 ### Third-Party Integrations
-1. **Stripe Connect (Standard accounts):**
-   - Store administrators start OAuth from the backoffice. Supabase Edge Functions create a single-use state token, redirect to Stripe, exchange the authorization code server-side, and store only the connected Stripe account ID and non-sensitive connection metadata.
-   - The frontend never stores or displays Stripe credentials. When server configuration is absent, Connect returns `STRIPE_CONNECT_NOT_CONFIGURED` and the UI stays disabled with a support message.
-   - Terminal reader registration and payment processing are intentionally outside the Connect architecture.
-   - **Temporary rollback:** the Store Backoffice currently uses the legacy manual Stripe form for testing. It stores `stripe_api_key`, `stripe_webhook_secret`, and `stripe_terminal_id` in browser `localStorage` on that device. This is not secure and must not be treated as the production configuration. The Stripe Connect migrations and Edge Functions remain in the repository but are not active in the frontend until the secure flow is restored.
+1. **Stripe Terminal via Android Bridge (active payment system):**
+   - The active card-payment path is `stripe_android_bridge`, configured per restaurant location in `restaurant_payment_configs` and processed by the Android bridge and a Stripe Terminal reader.
+   - Stripe Connect tables/functions remain in the repository but are not the active POS payment flow. The legacy browser-local Stripe form is not active and must not be treated as a payment configuration.
 2. **Payments Deep Linking (Viva Wallet & SumUp):**
    - Supports deep linking to external payment provider apps (Viva Wallet/SumUp) using native device URI schemes.
-3. **Cloud Order Webhook:** HubRise API order webhooks.
-4. **Local Hardware Printing (Epson TM-T20IV & TM-M30):**
+3. **Stripe Android Payment Bridge (BBPOS WisePad 3):**
+   - The POS does not communicate directly with the Android phone or reader. The flow is: `POS -> Supabase payment request -> Android Bridge -> Stripe reader -> Supabase status update -> POS`.
+   - The Android bridge enrols with a single-use Backoffice code, receives a dedicated Supabase Auth session, then sends `bridge_heartbeat` every 20 seconds and listens for payment requests through Realtime plus reconciliation polling.
+   - The Card / Visa choice in the POS is enabled only when the server reports an enabled `stripe_android_bridge` configuration and a terminal device with `status = online`, `reader_status = connected`, and a heartbeat no older than 60 seconds. A locally connected reader is not sufficient if the bridge cannot update Supabase.
+   - Android Bridge version **1.0.1** protects the periodic loop from uncaught exceptions and immediately sends a heartbeat after the reader connects. Its source lives in `android-payment-bridge/`; the APK must be rebuilt and installed before the device receives this update.
+4. **Cloud Order Webhook:** HubRise API order webhooks.
+5. **Local Hardware Printing (Epson TM-T20IV & TM-M30):**
    - Sends ePOS-Print XML commands over SOAP POST requests to the local printer IP using a secure HTTPS endpoint (`https://{IP}/cgi-bin/epos/service.cgi`).
    - Generates cash drawer triggers using the ESC/POS pulse tag `<pulse drawer="drawer_1" time="pulse_100"/>` as well as the fallback `<drawer pulse="1"/>` command.
    - **Silent Iframe Fallback:** Handles browser CORS/mixed-content blocks by automatically falling back to rendering receipts on a hidden 72mm iframe using browser print mechanics (`window.print()`).
@@ -73,8 +76,8 @@ erDiagram
 ### Table Definitions:
 1. **`stores`**: Represents store tenants. Contains attributes like `id` (UUID), `name` (TEXT), `business_type` (TEXT), integration and branding fields, `timezone` (TEXT, default `Europe/Brussels`), `currency` (TEXT, default `EUR`), `theme_config` (JSONB), `onboarding_status` (TEXT), `onboarding_completed` (BOOLEAN), `onboarding_completed_at` (TIMESTAMPTZ), and `created_at` (TIMESTAMPTZ).
 2. **`store_users`**: Maps users to stores. Contains `id` (UUID), `user_id` (UUID), `store_id` (UUID, foreign key references `stores`), `role` (`admin` or `cashier`), `ai_enabled` (BOOLEAN, defaults to `false`), and `created_at` (TIMESTAMPTZ).
-3. **`categories`**: Menu groups (e.g., Tacos, Side, Family Meals, Beef Burgers). Contains `id` (UUID), `name` (TEXT), `store_id` (UUID, foreign key references `stores`), and `created_at` (TIMESTAMPTZ).
-4. **`products`**: Standalone sales items. Contains `id` (UUID), `category_id` (UUID), `accounting_group_id` (UUID), `name` (TEXT), `price` (NUMERIC), and `store_id` (UUID). The legacy `vat_rate` column is deprecated and retained only for backward compatibility; new products use Accounting Groups and Tax Profiles.
+3. **`categories`**: Menu groups with `default_accounting_group_id`. New products inherit this group when no product-specific group is supplied. A category default never overwrites an explicit product exception.
+4. **`products`**: Sellable items with `accounting_group_id` and `accounting_group_is_override`. The first is the product's tax source; the second marks a manual override that is preserved when a category default is bulk-applied. The legacy `vat_rate` column is compatibility-only.
 5. **`modifiers`**: Product add-ons. Contains `id` (UUID), `product_id` (UUID, foreign key references `products`), `name` (TEXT), and `price_adjustment` (NUMERIC, defaults to `0.00`).
 6. **`orders`**: Checkout receipts. Contains `id` (UUID), `store_id` (UUID, foreign key references `stores`), `status` (`new` for cloud orders, `pending` for unpaid card orders, `completed`, `cancelled`), `total_amount` (NUMERIC), `raw_payload` (JSONB description of items, order type, applied coupon details, timestamp), and `created_at` (TIMESTAMPTZ).
 7. **`order_items`**: Junction mapping for orders. Contains `id` (UUID), `order_id` (UUID, foreign key references `orders`), `product_id` (UUID, foreign key references `products`), `quantity` (INTEGER), `price` (NUMERIC, defaults to `0.00`), `subtotal` (NUMERIC), and `store_id` (UUID, foreign key references `stores`).
@@ -90,13 +93,18 @@ erDiagram
 17. **`daily_closings`**: Immutable per-store daily-closing snapshots with receipt range, sales totals, VAT and payment breakdowns, and locking state.
 18. **`stripe_connect_connections`**: One connected Stripe Standard account per store, storing the account ID, scope, mode, and connection lifecycle metadata—never Stripe credentials or OAuth tokens.
 19. **`stripe_connect_states`**: Short-lived, single-use server-side OAuth state records binding a Connect callback to the initiating user and store.
-20. **`tax_rates`, `tax_profiles`, and `accounting_groups`**: Tenant-scoped, RLS-protected tax configuration. Products select an accounting group, whose profile resolves a configured tax rate per `dine_in`, `takeaway`, `delivery`, or fallback order type.
+20. **`tax_rates`, `tax_profiles`, and `accounting_groups`**: Tenant-scoped VAT configuration. A product's Accounting Group maps to a Tax Profile, which resolves a rate by order type. The database supports `dine_in`, `takeaway`, and `delivery`; the current POS exposes only Dine-in and Takeaway. Delivery remains a database/server order type for connected ordering channels and future use.
+21. **`terminal_devices`**: Android payment-bridge registrations. Each record belongs to a restaurant location and payment configuration, has a unique bridge Auth identity, and stores `status`, `reader_status`, `last_heartbeat_at`, app version, active request ID, and safe operational error state. This is the server-side source of truth for POS card availability.
+22. **`terminal_enrollment_codes`**: Short-lived, single-use codes created by an authorized Backoffice user to provision a bridge device without exposing a store user's credentials.
+23. **`payment_requests`**: Server-created card-payment work items. The bridge may claim and update the request, but amounts and final order settlement remain server-side.
 
 The accounting migration also adds immutable receipt, payment, cashier/device, currency, discount, and tax-snapshot fields to `orders` and `order_items`. These fields make reports independent of later catalog edits.
 
 ### Trusted checkout accounting
 
-`create_accounting_order` is the only checkout write path for the POS. It ignores client-supplied line prices, VAT amounts, order totals, and discount amounts. For every submitted product it loads the current store-owned product and modifiers, resolves the tax rate from its Accounting Group and Tax Profile using the order type, derives any active coupon from the server-side coupon record, and writes immutable accounting/tax snapshots to the receipt. A sale is rejected with `TAX_CONFIGURATION_MISSING` when a product has no valid group/profile/rate, rather than silently falling back to a fixed VAT percentage.
+`create_accounting_order` is the authoritative checkout write path. Frontend VAT is a display preview only: the RPC ignores client-submitted prices, VAT, totals, and discounts. It loads store-owned products and modifiers, resolves each tax rate from the product Accounting Group and Tax Profile for the order type, derives coupons server-side, and persists immutable receipt snapshots. A sale is rejected with `TAX_CONFIGURATION_MISSING` rather than falling back to a fixed VAT rate.
+
+For a Combo/Bundle, `product_bundle_components` expands the sellable combo into component order lines. The server allocates the combo price using each component's reference price multiplied by its `allocation_weight`, resolves VAT per component, and saves the component's tax/accounting snapshots plus bundle ID, bundle name, and allocation-weight snapshot. This keeps mixed-VAT bundles correct even after the catalog or tax setup changes.
 
 ### 2.1 Database Migrations
 
@@ -132,6 +140,14 @@ The database structure evolves incrementally through version-controlled SQL file
 28. **`20260718003815_fix_logo_storage_upsert_policy.sql`**: Adds the scoped Storage SELECT policy required for authenticated logo replacement via upsert.
 29. **`20260718010000_stripe_connect_architecture.sql`**: Adds Stripe Connect account/state tables, tenant-safe read access, and blocks all browser writes to the OAuth state and connection records.
 30. **`20260718020000_accounting_groups_tax_profiles.sql`**: Adds editable tax rates/profiles/accounting groups, Belgium-oriented review templates, cross-store integrity checks, and non-destructive legacy product assignment. It does not alter historical order snapshots.
+31. **`20260719020514_allow_store_users_to_check_terminal_availability.sql`**: Allows mapped store users to call `terminal_payment_availability` while preserving the terminal's own authorization path.
+32. **`20260718010000_add_terminal_payments.sql`**: Adds restaurant/location payment configuration, terminal devices, payment requests, and the Android Stripe Terminal foundation.
+33. **`20260718020000_terminal_enrollment_codes.sql`**: Adds single-use terminal enrollment codes and the bridge enrollment/heartbeat authorization model.
+34. **`20260718022000_trusted_tax_checkout.sql`**: Introduces the trusted `create_accounting_order` tax-aware checkout path.
+35. **`20260718190000_terminal_bridge_hardening.sql`** and **`20260718210000_restaurant1_terminal_payment_deploy.sql`**: Harden and deploy terminal bridge/payment behavior.
+36. **`20260719010000_category_tax_defaults_and_bundle_components.sql`**: Adds category default Accounting Groups and `product_bundle_components`.
+37. **`20260719020000_tax_safe_combos_and_category_overrides.sql`**: Adds product override protection, bundle component snapshots, safe category bulk-apply, and server-side combo VAT allocation.
+38. **`20260719030000_pos_bundle_tax_preview.sql`**: Includes bundle components in the POS catalog so the browser can display a per-component VAT preview; checkout remains server-authoritative.
 
 ---
 
@@ -180,13 +196,29 @@ cashpilot/
 │   │   ├── 20260718002340_secure_onboarding_rpc_grants.sql
 │   │   ├── 20260718002523_tighten_logo_listing.sql
 │   │   ├── 20260718003815_fix_logo_storage_upsert_policy.sql
-│   │   └── 20260718010000_stripe_connect_architecture.sql
+│   │   ├── 20260718010000_add_terminal_payments.sql
+│   │   ├── 20260718010000_stripe_connect_architecture.sql
+│   │   ├── 20260718020000_accounting_groups_tax_profiles.sql
+│   │   ├── 20260718020000_terminal_enrollment_codes.sql
+│   │   ├── 20260718022000_trusted_tax_checkout.sql
+│   │   ├── 20260718190000_terminal_bridge_hardening.sql
+│   │   ├── 20260718210000_restaurant1_terminal_payment_deploy.sql
+│   │   ├── 20260719010000_category_tax_defaults_and_bundle_components.sql
+│   │   ├── 20260719020000_tax_safe_combos_and_category_overrides.sql
+│   │   └── 20260719030000_pos_bundle_tax_preview.sql
 │   └── functions/                    # Deno Edge Functions
 │       ├── ai-business-analyst/      # Deno-Kimi Business Chatcompletion proxy endpoint
 │       ├── ai-menu-assistant/        # OCR Vision extraction endpoint
 │       ├── hubrise-webhook/          # External webhook receiver & order mapper
 │       ├── admin-create-user/        # Secure user accounts creation endpoint
 │       ├── admin-delete-user/        # Secure user accounts deletion endpoint
+│       ├── create-terminal-enrollment-code/ # One-time Android bridge enrollment code
+│       ├── register-terminal-device/ # Redeems code and provisions bridge identity/session
+│       ├── terminal-connection-token/# Stripe Terminal connection-token proxy
+│       ├── create-terminal-payment-intent/ # Server-side Stripe payment-intent creation
+│       ├── retrieve-terminal-payment-status/ # Server-side payment status lookup
+│       ├── cancel-terminal-payment/  # Server-side pending-payment cancellation
+│       ├── stripe-terminal-webhook/  # Stripe payment status webhook receiver
 │       ├── stripe-connect-start/     # Authenticated Connect OAuth URL creator
 │       ├── stripe-connect-callback/  # Public, state-validated OAuth callback
 │       └── stripe-connect-status/    # Authenticated store connection status
@@ -233,27 +265,34 @@ cashpilot/
 
 ---
 
+### Android payment bridge structure
+
+```
+android-payment-bridge/
+├── app/build.gradle.kts                         # Android application, Stripe Terminal dependencies, version 1.0.1
+└── app/src/main/java/com/cashmint/paymentbridge/
+    ├── MainActivity.kt                          # Enrollment UI, reader discovery, payment execution
+    ├── BridgeWorker.kt                          # Heartbeat, Realtime subscription, reconciliation loop
+    ├── BridgeApi.kt                             # Supabase Edge Function, RPC, Auth, and Realtime client
+    └── BridgeCredentials.kt                     # Encrypted local bridge-session storage
+```
+
 ## 4. Key Code Implementations & Core Logic
 
 ### A. Cashier Interface, Stripe Terminal, & Cart Calculations (`src/App.jsx`)
 `App.jsx` handles checkout, Stripe BBPOS WisePad 3 modal overlays, real-time Postgres webhook listeners, language translations, chime generation, cashier shift sessions, POS device status subscriptions, and the PIN gate.
 
 Key features include:
-1. **Cart Math Fix & Inclusive Calculations:**
-   - Calculates the base cost without VAT.
-   - Applies the validated coupon discount (if any):
-     - `discountAmount` is calculated based on `discount_type` (`percentage` or `fixed` value).
-     - `totalAmount` is computed as `Math.max(0, cartSubtotal - discountAmount)`.
-     - `vatAmount` (12%) is computed as: `vatAmount = totalAmount * (vatRate / (1 + vatRate))`.
-     - `subtotal` (excluding VAT) is displayed as `(totalAmount - vatAmount).toFixed(2) €`.
-   - The UI display guarantees mathematical consistency (`Subtotal + VAT = Total`) while maintaining database alignment.
+1. **VAT display preview and checkout:**
+   - The POS resolves tax rates by the selected Dine-in or Takeaway order type and shows a per-rate VAT preview, including mixed rates in a combo.
+   - This preview is informational only. `create_accounting_order` repeats the resolution and calculation server-side, so the browser cannot choose the final VAT rate, amount, discount, or total.
 2. **Promo Code / Coupon Application:**
    - `handleApplyCoupon` queries the `coupons` table in Supabase matching `store_id`, `code`, and checking `is_active = true`.
    - Successfully validated coupons apply a live discount, which is logged into the order's `raw_payload` under `coupon_code` and `discount_amount` during checkout.
 3. **Stripe terminal workflow (WisePad 3):**
    - Selecting Card Payment creates the database order record with status `pending`.
    - Displays `showStripeModal` spinner instructing the cashier to use the BBPOS WisePad 3 device.
-   - Contains a development simulation button that calls `supabase.from('orders').update({ status: 'completed' })` to trigger mock webhooks.
+   - Production completion is server-confirmed through the Android bridge/Stripe Terminal payment flow. The browser does not directly update an order to `completed`.
 4. **Real-time Order Subscriptions:**
    - Listens to PostgreSQL `UPDATE` changes. If the update payload status changes to `completed` and maps to `activePaymentOrderId`, it plays success chimes, prints the receipt, clears the cart, and closes the modal.
 5. **Numeric Keyboard Access (PIN Gate):**
@@ -276,6 +315,8 @@ Key features include:
 10. **Hostname Routing & Backoffice Central Gateway:**
     - Detects if running on `cashmint.online` or custom domains. If active, Central SaaS backoffice bypasses device checks and initiates the tree-shaken `SuperAdminDashboard` components.
     - Backoffice login enforces superadmin restriction checks via the `is_superadmin` RPC function, email domain validation (`@cashmint.online`), or role mappings, rendering cyan-blue glows and animated security accents.
+11. **Card availability gate:**
+    - The POS calls `terminal_payment_availability` on startup and periodically afterwards. Card/Visa remains disabled until the Android bridge has reported an online, connected reader within the heartbeat window. This prevents a cashier from creating a card checkout that no reader can process.
 
 ---
 
@@ -435,9 +476,9 @@ Coordinates advanced option configurations and AI menu imports.
 
 ---
 
-### E. Hardware, HubRise, and Stripe Connect (`src/admin/IntegrationSettings.jsx`)
+### E. Hardware, HubRise, and Payment Configuration (`src/admin/IntegrationSettings.jsx`)
 - Provides input fields for the local printer IP address (optimized for `Epson TM-T20IV`).
-- Removes legacy browser-held Stripe secret, webhook-secret, and reader-ID values from local storage. The page shows connection state and starts Connect through authenticated Edge Functions instead.
+- The active card-payment configuration is the server-held `stripe_android_bridge` location configuration. The browser does not store Stripe credentials or reader secrets.
 - Incorporates a test print button that prints a demo receipt layout and triggers cash drawer kicks.
 
 ---
@@ -454,6 +495,9 @@ Coordinates advanced option configurations and AI menu imports.
 3. **`hubrise-webhook`**: Processes cloud orders from HubRise API integrations, matches incoming items to store products, and logs transactions to database tables.
 4. **`admin-create-user`**: Bypasses local session signs out to forcefully insert user accounts into `auth.users` with automated confirmation and map them in `public.store_users` using the service role key.
 5. **`admin-delete-user`**: Deletes mapping records and permanently purges user accounts from Supabase Auth securely.
+6. **`create-terminal-enrollment-code`**: Creates a 15-minute, single-use Android bridge enrollment code for an authorized store member. Its CORS configuration includes `x-client-info`, required by the Supabase browser client.
+7. **`register-terminal-device`**: Redeems that code, creates a dedicated bridge identity and `terminal_devices` record, and returns the short-lived bridge session plus reader location configuration to the Android app.
+8. **Terminal payment functions**: `terminal-connection-token`, `create-terminal-payment-intent`, `retrieve-terminal-payment-status`, and related functions keep sensitive Stripe actions and final payment confirmation on the server.
 
 ---
 
@@ -522,16 +566,16 @@ Coordinates advanced option configurations and AI menu imports.
 - The public `logos` bucket accepts only PNG/JPEG files up to 5 MB. Objects use `{store_id}/logo.{png|jpg}`. Storage RLS grants mapped store users scoped SELECT, INSERT, UPDATE, and DELETE access; SELECT is required for replacement uploads using `upsert`.
 - `save_store_onboarding` checks membership inside a security-definer RPC. Anonymous execution is revoked; authenticated mapped users can update only their own store's onboarding state.
 
-### P. Stripe Connect Configuration and Deployment
-- The following Supabase Edge Function secrets are required and are the only location for Stripe configuration: `STRIPE_SECRET_KEY`, `STRIPE_CONNECT_CLIENT_ID`, `STRIPE_CONNECT_REDIRECT_URI`, `STRIPE_CONNECT_SUCCESS_URL`, and `STRIPE_CONNECT_ERROR_URL`.
-- `STRIPE_CONNECT_REDIRECT_URI` must be the deployed `stripe-connect-callback` URL and must exactly match a redirect URI configured in Stripe. `STRIPE_CONNECT_SUCCESS_URL` and `STRIPE_CONNECT_ERROR_URL` must be trusted Cashmint application URLs that return the administrator to the backoffice.
-- In Stripe Dashboard, enable **Connect OAuth**, copy the Connect client ID, and register the exact deployed callback URL under Connect OAuth redirect URIs. Configure the client ID and secret key from the same Stripe mode (test or live); Stripe requires the token exchange key to match the authorization-code mode.
-- Deploy `stripe-connect-start`, `stripe-connect-callback`, and `stripe-connect-status` with the migration. `supabase/config.toml` marks only the callback as `verify_jwt = false`, because Stripe redirects to it without a Supabase session; it validates the state token before exchanging any code.
-- No Stripe secret, webhook secret, OAuth access token, refresh token, terminal reader identifier, or payment flow is implemented or persisted by this integration. Missing configuration returns `STRIPE_CONNECT_NOT_CONFIGURED`, and the frontend displays: "Stripe integration is not configured yet. Contact Cashmint support."
+### P. Active Stripe Terminal Configuration
+- The active Stripe system is the Android bridge (`stripe_android_bridge`), not Stripe Connect. Stripe account/location data and secrets are server-held in the location payment configuration and Supabase Edge Function environment; neither the POS nor Backoffice browser stores them.
+- A Backoffice user generates a one-time enrollment code. The Android bridge redeems it, receives a dedicated bridge session, sends heartbeats, claims server-created payment requests, operates the Bluetooth reader, and posts payment status back through Supabase.
+- Stripe Connect tables and Edge Functions are retained in the codebase but are inactive for the current POS payment workflow. The legacy local Stripe form is likewise inactive.
 
 ### Q. Accounting Groups and VAT Profiles
-- Products are assigned to an Accounting Group rather than a directly editable VAT percentage. A group maps to a Tax Profile, which selects a rate by order type. The Belgian template includes Food, Alcohol, Tax Exempt, Soft Drinks (intentionally left configurable), Legacy 12%, and an Unassigned / Legacy group for safe migration.
-- Existing products are assigned to Unassigned / Legacy without changing historical orders or their VAT snapshots. Store administrators must review any legacy assignments before relying on them for new sales.
+- Products use an Accounting Group rather than a manually entered VAT percentage. Each group maps to a Tax Profile that resolves a rate for `dine_in`, `takeaway`, `delivery`, or a fallback. The POS currently lets cashiers choose only Dine-in and Takeaway.
+- A category can define a default Accounting Group. New products inherit it only when no group is supplied. A product can instead use a manual Accounting Group override; category bulk-apply updates only products without that override.
+- The Combo Builder saves component products, quantities, and allocation weights in `product_bundle_components`. Checkout allocates the sellable combo price by `allocation_weight × component reference price`, then calculates and snapshots VAT for every component separately.
+- Existing products can remain in Unassigned / Legacy for migration safety, but a valid group/profile/rate is required before checkout. Historical order snapshots are never rewritten.
 - VAT classifications and rates should be reviewed with the store accountant. Cashmint exports structured accounting and VAT records for accountant review. It is not currently a certified Belgian GKS/Blackbox system.
 - Future cleanup: do not remove `products.vat_rate` until every product uses an accounting group and production migration/reporting verification is complete.
 
@@ -541,7 +585,7 @@ Coordinates advanced option configurations and AI menu imports.
 2. **Store-Level First-Login Onboarding:** Added a blocking, persisted two-step setup flow for assigned stores: public-name confirmation followed by logo upload and accessible palette-derived branding. Browser onboarding does not create stores or memberships.
 3. **Tax-Inclusive Cart Calculations:** Corrected the POS checkout calculations to show base subtotal and tax amounts mathematically adding up to the total receipt amount.
 4. **Promo Code Coupon Logic:** Implemented store-specific coupon discount applications (percentage & fixed discount value) affecting cart totals and checking out into order payloads.
-5. **Stripe Terminal Integration:** Wired up the `pending` order workflow, waiting overlays, simulated webhook successful triggers, and real-time subscription update captures for card sales.
+5. **Stripe Terminal Payment Architecture:** `POS → server-created payment request → Android Bridge → Stripe Terminal reader → server-confirmed payment status → POS completion`.
 6. **Epson TM-T20IV & TM-M30 Printer Control:** Configured direct network XML SOAP envelopes over HTTPS and printer cash drawer pulse command triggers, with a hidden iframe print fallback.
 7. **Admin Security Guard:** Added a numeric PIN pad verification gate with attempts limit lockout stages and OTP email codes.
 8. **Sales Analytics & Reprinting:** Added revenue logs and custom reprint actions.
