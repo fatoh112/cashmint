@@ -511,6 +511,7 @@ export default function App() {
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
   const activePaymentOrderIdRef = useRef(null);
   const activePaymentOrderRef = useRef(null);
+  const activePaymentUnknownNoticeRef = useRef(false);
   const checkoutInFlightRef = useRef(false);
   const autoPrintJobsRef = useRef(new Map());
   const autoPrintQueueRef = useRef(Promise.resolve());
@@ -534,7 +535,14 @@ export default function App() {
           return { success: false, skipped: true };
         }
 
-        const res = await printReceipt(order, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic });
+        let res = { success: false, error: 'Print job did not run' };
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          res = await printReceipt(order, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic });
+          if (res.success) break;
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 2500));
+          }
+        }
         if (!res.success) {
           showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
         } else {
@@ -546,8 +554,8 @@ export default function App() {
     autoPrintJobsRef.current.set(orderKey, job);
     autoPrintQueueRef.current = job
       .catch(() => {})
-      .then(() => new Promise(resolve => setTimeout(resolve, 1200)));
-    setTimeout(() => autoPrintJobsRef.current.delete(orderKey), 30000);
+      .then(() => new Promise(resolve => setTimeout(resolve, 3000)));
+    setTimeout(() => autoPrintJobsRef.current.delete(orderKey), 60000);
     return job;
   }, [store, isArabic]);
 
@@ -1293,6 +1301,7 @@ export default function App() {
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
+    activePaymentUnknownNoticeRef.current = false;
     let finalized = false;
     const handlePaymentRequestUpdate = async (request) => {
       if (!request || finalized) return;
@@ -1332,9 +1341,17 @@ export default function App() {
         showNotification('Stripe payment successfully completed!');
         return;
       }
-      if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
+      if (request.status === 'unknown') {
+        setShowStripeModal(true);
+        if (!activePaymentUnknownNoticeRef.current) {
+          activePaymentUnknownNoticeRef.current = true;
+          showNotification('Payment is still being checked with Stripe. Do not charge the customer again yet.', 'info');
+        }
+        return;
+      }
+      if (['failed', 'cancelled', 'expired'].includes(request.status)) {
         finalized = true;
-        showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
+        showNotification(request.failure_message || 'Card payment could not be confirmed', 'error');
         setShowStripeModal(false);
         setActivePaymentRequestId(null);
         setActivePaymentOrderId(null);

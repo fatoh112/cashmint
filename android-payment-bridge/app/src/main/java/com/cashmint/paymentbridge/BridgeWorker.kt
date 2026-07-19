@@ -27,6 +27,8 @@ object BridgeWorker {
     private var lastError = ""
     private var onClaimed: ((String) -> Unit)? = null
     private var onCancel: ((String) -> Unit)? = null
+    private var retryingActiveRequestId = ""
+    private var retryingActiveAt = 0L
 
     fun start(context: Context, client: BridgeApi, claimed: (String) -> Unit, cancelled: (String) -> Unit = {}) {
         credentials = BridgeCredentials(context.applicationContext)
@@ -78,7 +80,7 @@ object BridgeWorker {
         api.rpc("bridge_heartbeat", JSONObject()
             .put("p_reader_status", readerStatus)
             .put("p_current_payment_request_id", credentials.activeRequestId().ifBlank { JSONObject.NULL })
-            .put("p_app_version", "1.0.7")) { result ->
+            .put("p_app_version", "1.0.8")) { result ->
             result.onSuccess { lastHeartbeat = java.text.DateFormat.getTimeInstance().format(java.util.Date()) }
                 .onFailure { lastError = "Heartbeat failed: ${it.message}" }
         }
@@ -90,6 +92,7 @@ object BridgeWorker {
             api.status(active) { result -> result.onSuccess { request ->
                 when (request.optString("status")) {
                     "cancel_requested" -> onCancel?.invoke(active)
+                    "requires_payment_method" -> retryActivePayment(active)
                     "succeeded", "failed", "cancelled", "expired" -> release(active)
                 }
             }.onFailure { lastError = "Active payment reconciliation failed: ${it.message}" } }
@@ -110,6 +113,8 @@ object BridgeWorker {
             "pending" -> if (busy.compareAndSet(false, true)) {
                 api.rpc("claim_terminal_payment_request", JSONObject().put("p_payment_request_id", id)) { result ->
                     result.onSuccess {
+                        retryingActiveRequestId = ""
+                        retryingActiveAt = 0L
                         credentials.setActiveRequestId(id)
                         onClaimed?.invoke(id)
                     }.onFailure { busy.set(false); lastError = "Payment claim failed: ${it.message}" }
@@ -120,6 +125,15 @@ object BridgeWorker {
                 onClaimed?.invoke(id)
             }
         }
+    }
+
+    private fun retryActivePayment(id: String) {
+        val now = System.currentTimeMillis()
+        if (retryingActiveRequestId == id && now - retryingActiveAt < 45_000L) return
+        retryingActiveRequestId = id
+        retryingActiveAt = now
+        lastError = "Retrying payment after Stripe requested another card attempt"
+        onClaimed?.invoke(id)
     }
 
     private fun ensureRealtime() {
@@ -170,7 +184,12 @@ object BridgeWorker {
     fun markUnknownUntilWebhook(id: String) = update(id, "unknown")
     fun markFailureOrUnknown(id: String, error: Throwable) = update(id, "unknown", error.message)
     fun markCancelled(id: String) = update(id, "cancelled")
-    fun release(id: String) { if (credentials.activeRequestId() == id) credentials.setActiveRequestId(null); busy.set(false) }
+    fun release(id: String) {
+        if (credentials.activeRequestId() == id) credentials.setActiveRequestId(null)
+        retryingActiveRequestId = ""
+        retryingActiveAt = 0L
+        busy.set(false)
+    }
     private fun update(id: String, status: String, error: String? = null) {
         api.rpc("bridge_update_terminal_payment", JSONObject().put("p_payment_request_id", id).put("p_status", status).put("p_failure_message", error)) { result ->
             result.onFailure { lastError = "Payment status update failed: ${it.message}" }

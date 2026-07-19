@@ -568,10 +568,22 @@ class MainActivity : AppCompatActivity(), TerminalListener {
 
     private fun failOrReconcile(requestId: String, error: Throwable) {
         api.status(requestId) { result ->
-            result.onSuccess {
-                BridgeWorker.markFailureOrUnknown(requestId, error)
+            result.onSuccess { status ->
+                if (status.optString("status") == "requires_payment_method") {
+                    BridgeWorker.markWaiting(requestId)
+                    runOnUiThread {
+                        paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPrevious attempt timed out or was declined. Present the card again."
+                        retryButton.isEnabled = false
+                        renderDiagnostics()
+                    }
+                    mainHandler.postDelayed({ onClaimedPaymentRequest(requestId) }, 750L)
+                } else {
+                    BridgeWorker.markFailureOrUnknown(requestId, error)
+                    pollStripeCompletion(requestId)
+                }
             }.onFailure {
                 BridgeWorker.markFailureOrUnknown(requestId, error)
+                pollStripeCompletion(requestId)
             }
         }
         activeRequestId = null
@@ -599,7 +611,16 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                 renderDiagnostics()
                             }
                         }
-                        "canceled", "requires_payment_method" -> {
+                        "requires_payment_method" -> {
+                            BridgeWorker.markWaiting(requestId)
+                            runOnUiThread {
+                                paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPrevious attempt timed out or was declined. Present the card again."
+                                retryButton.isEnabled = false
+                                renderDiagnostics()
+                            }
+                            mainHandler.postDelayed({ onClaimedPaymentRequest(requestId) }, 750L)
+                        }
+                        "canceled" -> {
                             BridgeWorker.markFailureOrUnknown(requestId, RuntimeException("Stripe status: ${status.optString("status")}"))
                             runOnUiThread {
                                 paymentDetails.text = "Payment request: $requestId\nState: failed\nStripe status: ${status.optString("status")}"
@@ -704,7 +725,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.7" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.8" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }
