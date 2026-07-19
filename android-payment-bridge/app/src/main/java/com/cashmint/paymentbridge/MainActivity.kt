@@ -585,13 +585,13 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                     activeRequestId = null
                     runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: cancelled"; retryButton.isEnabled = false; renderDiagnostics() }
                 } else if (status.optString("status") == "requires_payment_method") {
-                    BridgeWorker.markWaiting(requestId)
+                    BridgeWorker.markFailed(requestId, "Payment timed out or was declined. Start a new card payment from the cashier.")
+                    activeRequestId = null
                     runOnUiThread {
-                        paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPrevious attempt timed out or was declined. Present the card again."
+                        paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment timed out or was declined. Start a new card payment from the cashier."
                         retryButton.isEnabled = false
                         renderDiagnostics()
                     }
-                    mainHandler.postDelayed({ onClaimedPaymentRequest(requestId) }, 750L)
                 } else {
                     BridgeWorker.markFailureOrUnknown(requestId, error)
                     pollStripeCompletion(requestId)
@@ -602,7 +602,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             }
         }
         activeRequestId = null
-        runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nWaiting for server reconciliation: ${error.message}"; retryButton.isEnabled = true; renderDiagnostics() }
+        runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: reconciling\nChecking Stripe result: ${error.message}"; retryButton.isEnabled = false; renderDiagnostics() }
     }
 
     private fun pollStripeCompletion(requestId: String, attempt: Int = 0) {
@@ -640,19 +640,20 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                 BridgeWorker.markCancelled(requestId)
                                 return@onSuccess
                             }
-                            BridgeWorker.markWaiting(requestId)
+                            BridgeWorker.markFailed(requestId, "Payment timed out or was declined. Start a new card payment from the cashier.")
+                            activeRequestId = null
                             runOnUiThread {
-                                paymentDetails.text = "Payment request: $requestId\nState: waiting_for_card\nPrevious attempt timed out or was declined. Present the card again."
+                                paymentDetails.text = "Payment request: $requestId\nState: failed\nPayment timed out or was declined. Start a new card payment from the cashier."
                                 retryButton.isEnabled = false
                                 renderDiagnostics()
                             }
-                            mainHandler.postDelayed({ onClaimedPaymentRequest(requestId) }, 750L)
                         }
                         "canceled" -> {
-                            BridgeWorker.markFailureOrUnknown(requestId, RuntimeException("Stripe status: ${status.optString("status")}"))
+                            BridgeWorker.markCancelled(requestId)
+                            activeRequestId = null
                             runOnUiThread {
-                                paymentDetails.text = "Payment request: $requestId\nState: failed\nStripe status: ${status.optString("status")}"
-                                retryButton.isEnabled = true
+                                paymentDetails.text = "Payment request: $requestId\nState: cancelled\nStripe status: ${status.optString("status")}"
+                                retryButton.isEnabled = false
                                 renderDiagnostics()
                             }
                         }
@@ -774,7 +775,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.9" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.10" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }

@@ -44,7 +44,7 @@ Deno.serve(async (req) => {
     } else if (verified.status === 'canceled') {
       await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? null, updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else if (verified.status === 'requires_payment_method') {
-      await db.from('payment_requests').update({ status: 'waiting_for_card', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment attempt was not completed. Present the card again.', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+      await db.from('payment_requests').update({ status: 'failed', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment timed out or was declined.', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     } else {
       await db.from('payment_requests').update({ status: 'unknown', updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
     }
