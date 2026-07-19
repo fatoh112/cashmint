@@ -510,6 +510,7 @@ export default function App() {
   const [stripeStatus, setStripeStatus] = useState('connecting'); // 'connecting', 'waiting_for_card', 'processing', 'success', 'failed'
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
   const activePaymentOrderIdRef = useRef(null);
+  const activePaymentOrderRef = useRef(null);
   const checkoutInFlightRef = useRef(false);
   const autoPrintJobsRef = useRef(new Map());
   const autoPrintQueueRef = useRef(Promise.resolve());
@@ -1218,6 +1219,7 @@ export default function App() {
               setShowStripeModal(false);
               setActivePaymentOrderId(null);
               setActivePaymentRequestId(null);
+              activePaymentOrderRef.current = null;
               showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح! 🚀" : "Stripe payment successfully completed! 🚀");
 
               // Update cashier session totals for card orders
@@ -1315,8 +1317,9 @@ export default function App() {
         finalized = true;
         activePaymentOrderIdRef.current = null;
         setShowStripeModal(false);
-        if (completedOrder) {
-          enqueueAutoReceiptPrint(completedOrder);
+        const receiptOrder = completedOrder || activePaymentOrderRef.current;
+        if (receiptOrder) {
+          enqueueAutoReceiptPrint({ ...receiptOrder, status: 'completed' });
         }
 
         if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
@@ -1325,6 +1328,7 @@ export default function App() {
         setCart([]);
         setActivePaymentOrderId(null);
         setActivePaymentRequestId(null);
+        activePaymentOrderRef.current = null;
         showNotification('Stripe payment successfully completed!');
         return;
       }
@@ -1335,6 +1339,7 @@ export default function App() {
         setActivePaymentRequestId(null);
         setActivePaymentOrderId(null);
         activePaymentOrderIdRef.current = null;
+        activePaymentOrderRef.current = null;
       }
     };
     const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
@@ -1688,6 +1693,7 @@ export default function App() {
         });
         if (paymentRequestError) throw paymentRequestError;
         if (!paymentRequest?.id) throw new Error('Card payment bridge did not accept the payment request.');
+        activePaymentOrderRef.current = createdOrder;
         setActivePaymentOrderId(createdOrder.id);
         setActivePaymentRequestId(paymentRequest.id);
         setShowStripeModal(true);
@@ -3054,6 +3060,7 @@ export default function App() {
                   setActivePaymentOrderId(null);
                   setActivePaymentRequestId(null);
                   activePaymentOrderIdRef.current = null;
+                  activePaymentOrderRef.current = null;
                   showNotification('Card payment process cancelled', 'error');
                 }}
                 className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
