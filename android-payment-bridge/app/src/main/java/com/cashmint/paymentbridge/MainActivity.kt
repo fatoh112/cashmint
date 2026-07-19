@@ -547,6 +547,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                                                 BridgeWorker.markUnknownUntilWebhook(requestId)
                                                 activeRequestId = null
                                                 runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nAwaiting Stripe webhook confirmation."; renderDiagnostics() }
+                                                pollStripeCompletion(requestId)
                                             }
                                             override fun onFailure(e: TerminalException) = failOrReconcile(requestId, e)
                                         }
@@ -575,6 +576,42 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         }
         activeRequestId = null
         runOnUiThread { paymentDetails.text = "Payment request: $requestId\nState: unknown\nWaiting for server reconciliation: ${error.message}"; retryButton.isEnabled = true; renderDiagnostics() }
+    }
+
+    private fun pollStripeCompletion(requestId: String, attempt: Int = 0) {
+        if (attempt >= 30) {
+            runOnUiThread {
+                paymentDetails.text = "Payment request: $requestId\nState: awaiting confirmation\nCheck cashier order history before retrying."
+                retryButton.isEnabled = true
+                renderDiagnostics()
+            }
+            return
+        }
+        mainHandler.postDelayed({
+            api.status(requestId) { result ->
+                result.onSuccess { status ->
+                    when (status.optString("status")) {
+                        "succeeded" -> {
+                            BridgeWorker.release(requestId)
+                            runOnUiThread {
+                                paymentDetails.text = "Payment request: $requestId\nState: succeeded\nOrder completion is confirmed by Stripe webhook."
+                                retryButton.isEnabled = false
+                                renderDiagnostics()
+                            }
+                        }
+                        "canceled", "requires_payment_method" -> {
+                            BridgeWorker.markFailureOrUnknown(requestId, RuntimeException("Stripe status: ${status.optString("status")}"))
+                            runOnUiThread {
+                                paymentDetails.text = "Payment request: $requestId\nState: failed\nStripe status: ${status.optString("status")}"
+                                retryButton.isEnabled = true
+                                renderDiagnostics()
+                            }
+                        }
+                        else -> pollStripeCompletion(requestId, attempt + 1)
+                    }
+                }.onFailure { pollStripeCompletion(requestId, attempt + 1) }
+            }
+        }, 2_000L)
     }
 
     private fun cancelActivePayment() {
@@ -667,7 +704,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.6" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.7" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }

@@ -1269,62 +1269,74 @@ export default function App() {
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
-    const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
-        setStripeStatus(request.status);
-        if (request.status === 'succeeded') {
-          (async () => {
-            const orderId = activePaymentOrderIdRef.current || request.order_id;
-            if (!orderId) return;
-            const { data: completedOrder, error } = await supabase
-              .from('orders')
-              .select('*')
-              .eq('id', orderId)
-              .maybeSingle();
-            if (error) {
-              showNotification(error.message || 'Card payment completed, but order status could not be loaded.', 'info');
-              return;
-            }
-            if (completedOrder?.status !== 'completed') {
-              showNotification(isArabic ? 'تم تأكيد الدفع، ننتظر إكمال الطلب من الخادم.' : 'Payment confirmed, waiting for the server to complete the order.', 'info');
-              return;
-            }
-            activePaymentOrderIdRef.current = null;
-
-            const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
-            const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
-            if (localPrinterIP && autoPrint) {
-              printReceipt(completedOrder, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
-                if (!res.success) {
-                  showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-                } else {
-                  showNotification(
-                    isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully"
-                  );
-                }
-              });
-            }
-
-            if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
-              playChime();
-            }
-            setCart([]);
-            setShowStripeModal(false);
-            setActivePaymentOrderId(null);
-            setActivePaymentRequestId(null);
-            showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح!" : "Stripe payment successfully completed!");
-          })();
+    let finalized = false;
+    const handlePaymentRequestUpdate = async (request) => {
+      if (!request || finalized) return;
+      setStripeStatus(request.status);
+      if (request.status === 'succeeded') {
+        const orderId = activePaymentOrderIdRef.current || request.order_id;
+        if (!orderId) return;
+        const { data: completedOrder, error } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('id', orderId)
+          .maybeSingle();
+        if (error) {
+          showNotification(error.message || 'Card payment completed, but order status could not be loaded.', 'info');
           return;
         }
-        if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
-          showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
-          setShowStripeModal(false);
-          setActivePaymentRequestId(null);
-          setActivePaymentOrderId(null);
-          activePaymentOrderIdRef.current = null;
+        if (completedOrder?.status !== 'completed') {
+          showNotification(isArabic ? 'تم تأكيد الدفع، ننتظر إكمال الطلب من الخادم.' : 'Payment confirmed, waiting for the server to complete the order.', 'info');
+          return;
         }
+        finalized = true;
+        activePaymentOrderIdRef.current = null;
+
+        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
+        const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
+        if (localPrinterIP && autoPrint) {
+          printReceipt(completedOrder, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic }).then(res => {
+            if (!res.success) {
+              showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
+            } else {
+              showNotification(isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully");
+            }
+          });
+        }
+
+        if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
+          playChime();
+        }
+        setCart([]);
+        setShowStripeModal(false);
+        setActivePaymentOrderId(null);
+        setActivePaymentRequestId(null);
+        showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح!" : "Stripe payment successfully completed!");
+        return;
+      }
+      if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
+        finalized = true;
+        showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
+        setShowStripeModal(false);
+        setActivePaymentRequestId(null);
+        setActivePaymentOrderId(null);
+        activePaymentOrderIdRef.current = null;
+      }
+    };
+    const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
+        handlePaymentRequestUpdate(request);
       }).subscribe();
-    return () => { supabase.removeChannel(channel); };
+    const poll = setInterval(async () => {
+      if (finalized) return;
+      const { data, error } = await supabase
+        .from('payment_requests')
+        .select('id,status,order_id,failure_message')
+        .eq('id', activePaymentRequestId)
+        .maybeSingle();
+      if (!error) await handlePaymentRequestUpdate(data);
+    }, 2500);
+    return () => { clearInterval(poll); supabase.removeChannel(channel); };
   }, [activePaymentRequestId, isArabic]);
 
   const showNotification = (message, type = 'success') => {
