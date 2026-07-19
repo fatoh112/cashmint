@@ -35,7 +35,6 @@ import {
   Wifi,
   LogOut,
   ShoppingBag,
-  Truck,
   Home,
   Trash2,
   Plus,
@@ -465,15 +464,20 @@ export default function App() {
 
   const [cart, setCart] = useState([]);
   const [resolvedTaxRates, setResolvedTaxRates] = useState({});
+  const [bundleComponents, setBundleComponents] = useState([]);
   const [loadingData, setLoadingData] = useState(false);
-  const [orderType, setOrderType] = useState('takeaway'); // 'dine_in', 'takeaway', 'delivery'
+  // Delivery orders originate from connected ordering channels, not this POS.
+  const [orderType, setOrderType] = useState('takeaway');
   const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash' or 'card'
 
   // The POS preview follows the same per-order-type resolver as checkout.
   // Checkout still recalculates on the database, so this is only a display aid.
   useEffect(() => {
     const storeId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
-    const productIds = [...new Set(cart.map(item => item.product?.id).filter(Boolean))];
+    const productIds = [...new Set(cart.flatMap(item => {
+      const components = bundleComponents.filter(component => component.bundle_product_id === item.product?.id);
+      return components.length ? components.map(component => component.component_product_id) : [item.product?.id];
+    }).filter(Boolean))];
     if (!storeId || productIds.length === 0) { setResolvedTaxRates({}); return; }
     let cancelled = false;
     Promise.all(productIds.map(async (productId) => {
@@ -490,7 +494,7 @@ export default function App() {
       if (!cancelled) setResolvedTaxRates({});
     });
     return () => { cancelled = true; };
-  }, [cart, orderType, store?.id, deviceAuth?.storeId]);
+  }, [cart, bundleComponents, orderType, store?.id, deviceAuth?.storeId]);
 
   // Coupon/Promo Code states
   const [couponCodeInput, setCouponCodeInput] = useState('');
@@ -681,12 +685,14 @@ export default function App() {
         const cats = catalog?.categories || [];
         const prods = catalog?.products || [];
         const mods = catalog?.modifiers || [];
+        const bundles = catalog?.bundle_components || [];
         setStore(activeStore);
         setCategories(cats);
         setProducts(prods);
         setModifiers(mods);
+        setBundleComponents(bundles);
         setSelectedCategoryId(cats[0]?.id || null);
-        localStorage.setItem('pos_menu_items', JSON.stringify({ categories: cats, products: prods, modifiers: mods }));
+        localStorage.setItem('pos_menu_items', JSON.stringify({ categories: cats, products: prods, modifiers: mods, bundleComponents: bundles }));
         return;
       } catch (err) {
         console.error('Error fetching POS catalog:', err);
@@ -1496,15 +1502,36 @@ export default function App() {
       : Math.min(parseFloat(appliedCoupon.discount_value), cartSubtotal))
     : 0;
 
-  const cartWithResolvedTax = cart.map(item => ({
-    ...item,
-    product: { ...item.product, resolved_vat_rate: resolvedTaxRates[item.product?.id] }
-  }));
+  // A sellable combo is expanded only for accounting preview. The server repeats
+  // the same expansion from product_bundle_components before persisting the order.
+  const cartWithResolvedTax = cart.flatMap(item => {
+    const components = bundleComponents.filter(component => component.bundle_product_id === item.product?.id);
+    if (!components.length) return [{ ...item, product: { ...item.product, resolved_vat_rate: resolvedTaxRates[item.product?.id] } }];
+    const componentProducts = components.map(component => ({ component, product: products.find(product => product.id === component.component_product_id) })).filter(entry => entry.product);
+    const totalWeight = componentProducts.reduce((sum, entry) => sum + Number(entry.component.allocation_weight) * Number(entry.product.price), 0);
+    if (!totalWeight) return [{ ...item, product: { ...item.product, resolved_vat_rate: resolvedTaxRates[item.product?.id] } }];
+    return componentProducts.map(({ component, product }) => ({
+      ...item,
+      id: `${item.id}-${component.component_product_id}`,
+      quantity: item.quantity * Number(component.quantity),
+      selectedModifiers: [],
+      product: { ...product, price: Number(item.product.price) * (Number(component.allocation_weight) * Number(product.price)) / totalWeight, resolved_vat_rate: resolvedTaxRates[product.id] }
+    }));
+  });
   const accountingBeforeDiscount = calculateOrderAccounting(cartWithResolvedTax, 0);
   const accounting = calculateOrderAccounting(cartWithResolvedTax, discountAmount);
   const totalAmount = accounting.totals.gross;
   const vatAmount = accounting.totals.vat;
   const netDiscountAmount = accountingBeforeDiscount.totals.net - accounting.totals.net;
+  const taxBreakdown = accounting.lines.reduce((groups, line) => {
+    const key = Number(line.vatRate || 0).toFixed(2);
+    const current = groups[key] || { net: 0, vat: 0, gross: 0 };
+    current.net += line.netAmount;
+    current.vat += line.vatAmount;
+    current.gross += line.grossAmount;
+    groups[key] = current;
+    return groups;
+  }, {});
 
   // Checkout and Insert into Supabase
   const handleCheckout = async () => {
@@ -2701,16 +2728,6 @@ export default function App() {
                 <ShoppingBag className="w-3.5 h-3.5" />
                 <span>{t('takeaway')}</span>
               </button>
-              <button
-                onClick={() => setOrderType('delivery')}
-                className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${orderType === 'delivery'
-                  ? 'bg-white dark:bg-slate-800 text-amber-600 dark:text-amber-400 shadow-sm'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'
-                  }`}
-              >
-                <Truck className="w-3.5 h-3.5" />
-                <span>{isArabic ? 'توصيل' : 'Delivery'}</span>
-              </button>
             </div>
           </div>
 
@@ -2722,9 +2739,12 @@ export default function App() {
                 <p className="text-xs font-bold">{t('empty_cart')}</p>
               </div>
             ) : (
-              cart.map(item => {
+              cart.map((item, index) => {
                 const modsCost = item.selectedModifiers.reduce((s, m) => s + parseFloat(m.price_adjustment), 0);
                 const itemTotal = (parseFloat(item.product.price) + modsCost) * item.quantity;
+                const componentRates = bundleComponents.filter(component => component.bundle_product_id === item.product.id)
+                  .map(component => resolvedTaxRates[component.component_product_id]).filter(rate => rate !== undefined);
+                const taxRates = componentRates.length ? [...new Set(componentRates)] : [accounting.lines[index]?.vatRate || 0];
 
                 return (
                   <div
@@ -2738,6 +2758,9 @@ export default function App() {
                         </h4>
                         <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                           {parseFloat(item.product.price).toFixed(2)} €
+                        </span>
+                        <span className="ms-2 text-[10px] font-black text-amber-600 dark:text-amber-400">
+                          {isArabic ? `ضريبة ${taxRates.map(rate => `${Number(rate).toFixed(0)}%`).join(' + ')}` : `VAT ${taxRates.map(rate => `${Number(rate).toFixed(0)}%`).join(' + ')}`}
                         </span>
                       </div>
                       <span className="text-xs font-black text-slate-750 dark:text-slate-250">
@@ -2849,10 +2872,12 @@ export default function App() {
                   <span>-{netDiscountAmount.toFixed(2)} €</span>
                 </div>
               )}
-              <div className="flex justify-between text-xs">
-                <span className="font-bold text-slate-500 dark:text-slate-400">{isArabic ? `الضريبة (${orderType === 'dine_in' ? 'محلي' : orderType === 'delivery' ? 'توصيل' : 'سفري'})` : `Tax (${orderType === 'dine_in' ? 'Dine in' : orderType === 'delivery' ? 'Delivery' : 'Takeaway'})`}</span>
-                <span className="font-extrabold text-slate-700 dark:text-slate-355">{vatAmount.toFixed(2)} €</span>
-              </div>
+              {Object.entries(taxBreakdown).map(([rate, values]) => (
+                <div className="flex justify-between text-xs" key={rate}>
+                  <span className="font-bold text-slate-500 dark:text-slate-400">{isArabic ? `ضريبة ${Number(rate).toFixed(0)}%` : `VAT ${Number(rate).toFixed(0)}%`}</span>
+                  <span className="font-extrabold text-slate-700 dark:text-slate-355">{values.vat.toFixed(2)} €</span>
+                </div>
+              ))}
               <div className="flex justify-between text-sm border-t border-slate-200/50 dark:border-slate-800/80 pt-2 font-black">
                 <span className="text-slate-800 dark:text-slate-200">{t('total')}</span>
                 <span className="text-slate-950 dark:text-white text-base">{totalAmount.toFixed(2)} €</span>

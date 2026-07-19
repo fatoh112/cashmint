@@ -25,7 +25,6 @@ dist-ssr
 *.hprof
 android-payment-bridge\*.hprof
 *.hprof
-
 # Local Gradle dependency caches (generated; several GB)
 android-payment-bridge/.gradle-user-home*/
 
