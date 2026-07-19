@@ -1268,6 +1268,52 @@ export default function App() {
     const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
         setStripeStatus(request.status);
+        if (request.status === 'succeeded') {
+          (async () => {
+            const orderId = activePaymentOrderIdRef.current || request.order_id;
+            if (!orderId) return;
+            const { data: completedOrder, error } = await supabase
+              .from('orders')
+              .select('*')
+              .eq('id', orderId)
+              .maybeSingle();
+            if (error) {
+              showNotification(error.message || 'Card payment completed, but order status could not be loaded.', 'info');
+              return;
+            }
+            if (completedOrder?.status !== 'completed') {
+              showNotification(isArabic ? 'تم تأكيد الدفع، ننتظر إكمال الطلب من الخادم.' : 'Payment confirmed, waiting for the server to complete the order.', 'info');
+              return;
+            }
+            activePaymentOrderIdRef.current = null;
+
+            const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
+            const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
+            if (localPrinterIP && autoPrint) {
+              printReceipt(completedOrder, localPrinterIP, store ? store.name : 'Cashmint').then(res => {
+                if (!res.success) {
+                  showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
+                } else {
+                  showNotification(
+                    res.fallback
+                      ? (isArabic ? "تم فتح نافذة الطباعة للفاتورة" : "Receipt fallback print window opened")
+                      : (isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully")
+                  );
+                }
+              });
+            }
+
+            if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
+              playChime();
+            }
+            setCart([]);
+            setShowStripeModal(false);
+            setActivePaymentOrderId(null);
+            setActivePaymentRequestId(null);
+            showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح!" : "Stripe payment successfully completed!");
+          })();
+          return;
+        }
         if (['failed', 'cancelled', 'expired', 'unknown'].includes(request.status)) {
           showNotification(request.failure_message || (isArabic ? 'تعذر تأكيد دفع البطاقة' : 'Card payment could not be confirmed'), 'error');
           setShowStripeModal(false);
