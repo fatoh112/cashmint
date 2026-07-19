@@ -33,9 +33,7 @@ Deno.serve(async (req) => {
     let input: { enrollment_code?: unknown, display_name?: unknown }
     try { input = await req.json() } catch { return failure('invalid_json', 'Request body must be valid JSON', 400) }
     const { enrollment_code, display_name } = input
-    if (!enrollment_code || typeof enrollment_code !== 'string' || enrollment_code.length < 12) {
-      return failure('invalid_enrollment_code', 'Enrollment code is invalid', 400)
-    }
+    if (!enrollment_code || typeof enrollment_code !== 'string' || enrollment_code.length < 12) return failure('invalid_enrollment_code', 'Enrollment code is invalid', 400)
     const db = service()
     const codeHash = await sha256(enrollment_code)
     const { data: enrollment, error: enrollmentError } = await db.from('terminal_enrollment_codes').select('*').eq('code_hash', codeHash).is('redeemed_at', null).gt('expires_at', new Date().toISOString()).maybeSingle()
@@ -44,8 +42,6 @@ Deno.serve(async (req) => {
     const { data: config, error: configError } = await db.from('restaurant_payment_configs').select('id,restaurant_id,location_id,provider_type,provider_config').eq('id', enrollment.payment_config_id).eq('location_id', enrollment.location_id).eq('is_enabled', true).single()
     if (configError) { logFailure('payment_config_lookup', configError); return failure('payment_config_lookup_failed', 'Could not load terminal payment configuration', 500) }
     if (!config || config.provider_type !== 'stripe_android_bridge') return failure('invalid_payment_configuration', 'Terminal payment configuration is inactive or invalid', 400)
-    // Use a syntactically valid non-routable address; the identity is confirmed
-    // immediately and never receives email, but Supabase Auth still validates it.
     const bridgeEmail = `terminal-${crypto.randomUUID()}@bridge.cashmint.example.com`; const bridgePassword = randomPassword()
     const bridgeResponse = await authAdminRequest('/users', { method: 'POST', body: JSON.stringify({ email: bridgeEmail, password: bridgePassword, email_confirm: true, app_metadata: { terminal_bridge: true } }) })
     const bridge = await bridgeResponse.json().catch(() => null)
@@ -62,8 +58,5 @@ Deno.serve(async (req) => {
     const { data: location, error: locationError } = await db.from('restaurant_locations').select('name,restaurants(name)').eq('id', enrollment.location_id).single()
     if (locationError || !location) { logFailure('location_lookup', locationError); return failure('location_lookup_failed', 'Could not load restaurant location', 500) }
     return json({ device_id:device.id, restaurant_id:device.restaurant_id, location_id:device.location_id, restaurant_name:location?.restaurants?.name, location_name:location?.name, stripe_location_id:config.provider_config?.stripe_location_id ?? null, session, supabase_url:Deno.env.get('SUPABASE_URL'), anon_key:Deno.env.get('SUPABASE_ANON_KEY') })
-  } catch (error) {
-    logFailure('unexpected', error)
-    return failure('enrollment_failed', 'Enrollment could not be completed', 500)
-  }
+  } catch (error) { logFailure('unexpected', error); return failure('enrollment_failed', 'Enrollment could not be completed', 500) }
 })
