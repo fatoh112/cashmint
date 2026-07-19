@@ -299,7 +299,8 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
             price: row.price,
             category_id: catId,
             store_id: store.id,
-            accounting_group_id: accountingGroupMap.get(row.category_name.toLowerCase().trim())
+            accounting_group_id: accountingGroupMap.get(row.category_name.toLowerCase().trim()),
+            vat_rate: null
           });
         }
       });

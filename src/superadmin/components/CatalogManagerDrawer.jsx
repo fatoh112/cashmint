@@ -8,6 +8,7 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
   // Data State
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
+  const [accountingGroups, setAccountingGroups] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -23,7 +24,7 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
     name: '',
     price: '',
     category_id: '',
-    vat_rate: '12.0',
+    accounting_group_id: '',
     is_available: true
   });
   const [savingProduct, setSavingProduct] = useState(false);
@@ -50,9 +51,17 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
         .eq('store_id', storeId)
         .order('name');
       if (prodsErr) throw prodsErr;
+      const { data: groups, error: groupsErr } = await supabase
+        .from('accounting_groups')
+        .select('id,name,is_default,tax_profiles(name,dine_in_tax_rate:tax_rates!tax_profiles_dine_in_tax_rate_id_fkey(rate),takeaway_tax_rate:tax_rates!tax_profiles_takeaway_tax_rate_id_fkey(rate))')
+        .eq('store_id', storeId)
+        .eq('is_active', true)
+        .order('name');
+      if (groupsErr) throw groupsErr;
 
       setCategories(cats || []);
       setProducts(prods || []);
+      setAccountingGroups(groups || []);
     } catch (err) {
       console.error('Error fetching catalog data:', err);
       const dbErrorMessage = err.message || err.details || '';
@@ -79,7 +88,7 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
         name: '',
         price: '',
         category_id: '',
-        vat_rate: '12.0',
+        accounting_group_id: '',
         is_available: true
       });
     }
@@ -153,8 +162,8 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
   // --- Product Handlers ---
   const handleAddProduct = async (e) => {
     e.preventDefault();
-    const { name, price, category_id, vat_rate, is_available } = newProductForm;
-    if (!name.trim() || !price || !category_id) {
+    const { name, price, category_id, accounting_group_id, is_available } = newProductForm;
+    if (!name.trim() || !price || !category_id || !accounting_group_id) {
       setError(isArabic ? 'الرجاء ملء جميع الحقول المطلوبة' : 'Please fill all required fields');
       return;
     }
@@ -170,7 +179,8 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
           name: name.trim(),
           price: parseFloat(price),
           category_id,
-          vat_rate: parseFloat(vat_rate),
+          accounting_group_id,
+          vat_rate: null,
           is_available,
           store_id: storeId
         });
@@ -182,7 +192,7 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
         name: '',
         price: '',
         category_id: '',
-        vat_rate: '12.0',
+        accounting_group_id: '',
         is_available: true
       });
       setIsAddingProduct(false);
@@ -489,6 +499,24 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
                             ))}
                           </select>
                         </div>
+                        <div className="col-span-2">
+                          <label className="block text-[10px] font-black text-slate-400 mb-1.5">
+                            {isArabic ? 'مجموعة المحاسبة' : 'Accounting Group'}
+                          </label>
+                          <select
+                            required
+                            value={newProductForm.accounting_group_id}
+                            onChange={(e) => setNewProductForm({ ...newProductForm, accounting_group_id: e.target.value })}
+                            className="w-full bg-slate-900 border border-slate-750 focus:border-cyan-500/50 rounded-lg px-3 py-2 text-xs text-white focus:outline-hidden cursor-pointer"
+                          >
+                            <option value="">{isArabic ? 'اختر مجموعة محاسبية' : 'Select accounting group'}</option>
+                            {accountingGroups.map((group) => (
+                              <option key={group.id} value={group.id}>
+                                {group.name} - Dine-in {group.tax_profiles?.dine_in_tax_rate?.rate ?? '-'}% / Takeaway {group.tax_profiles?.takeaway_tax_rate?.rate ?? '-'}%
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
 
                       <div className="flex gap-2 justify-end pt-2">
@@ -500,7 +528,7 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
                               name: '',
                               price: '',
                               category_id: '',
-                              vat_rate: '12.0',
+                              accounting_group_id: '',
                               is_available: true
                             });
                           }}
@@ -596,4 +624,3 @@ export default function CatalogManagerDrawer({ isOpen, onClose, storeId, storeNa
     </div>
   );
 }
-

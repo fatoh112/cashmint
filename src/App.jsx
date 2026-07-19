@@ -1574,8 +1574,17 @@ export default function App() {
       product: { ...product, price: Number(item.product.price) * (Number(component.allocation_weight) * Number(product.price)) / totalWeight, resolved_vat_rate: resolvedTaxRates[product.id] }
     }));
   });
-  const accountingBeforeDiscount = calculateOrderAccounting(cartWithResolvedTax, 0);
-  const accounting = calculateOrderAccounting(cartWithResolvedTax, discountAmount);
+  let taxConfigurationError = null;
+  let accountingBeforeDiscount;
+  let accounting;
+  try {
+    accountingBeforeDiscount = calculateOrderAccounting(cartWithResolvedTax, 0, orderType);
+    accounting = calculateOrderAccounting(cartWithResolvedTax, discountAmount, orderType);
+  } catch (error) {
+    taxConfigurationError = error;
+    accountingBeforeDiscount = { lines: [], totals: { net: 0, vat: 0, gross: 0, discount: 0 } };
+    accounting = { lines: [], totals: { net: 0, vat: 0, gross: 0, discount: 0 } };
+  }
   const totalAmount = accounting.totals.gross;
   const vatAmount = accounting.totals.vat;
   const netDiscountAmount = accountingBeforeDiscount.totals.net - accounting.totals.net;
@@ -1592,6 +1601,10 @@ export default function App() {
   // Checkout and Insert into Supabase
   const handleCheckout = async () => {
     if (cart.length === 0) return;
+    if (taxConfigurationError) {
+      showNotification(taxConfigurationError.message, 'error');
+      return;
+    }
     if (checkoutInFlightRef.current || activePaymentRequestId) {
       showNotification(isArabic ? 'A card payment is already in progress.' : 'A card payment is already in progress.', 'info');
       return;

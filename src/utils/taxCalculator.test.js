@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { accountingTotalsReconcile, calculateOrderAccounting } from './taxCalculator';
+import { accountingTotalsReconcile, calculateOrderAccounting, resolveProductVat } from './taxCalculator';
 
 const line = (price, vatRate, quantity = 1, extras = {}) => ({
   product: { id: extras.id || crypto.randomUUID(), name: extras.name || 'Item', price, vat_rate: vatRate, category_name: 'Food' },
@@ -59,5 +59,49 @@ describe('calculateOrderAccounting', () => {
   it('does not create negative values from malformed prices', () => {
     const result = calculateOrderAccounting([line(-5, 12), line('not-a-number', 12)]);
     expect(result.totals).toMatchObject({ net: 0, vat: 0, gross: 0 });
+  });
+});
+
+const group = (dineIn, takeaway, extras = {}) => ({
+  id: extras.id || crypto.randomUUID(),
+  tax_profiles: {
+    dine_in_tax_rate: { rate: dineIn },
+    takeaway_tax_rate: { rate: takeaway },
+  },
+});
+
+describe('resolveProductVat', () => {
+  it('uses product accounting group for dine-in', () => {
+    expect(resolveProductVat({ name: 'Food', accounting_group_id: 'group', accounting_group: group(12, 6) }, 'dine_in')).toBe(12);
+  });
+
+  it('uses product accounting group for takeaway', () => {
+    expect(resolveProductVat({ name: 'Food', accounting_group_id: 'group', accounting_group: group(12, 6) }, 'takeaway')).toBe(6);
+  });
+
+  it('uses manual product override before the regular product group', () => {
+    expect(resolveProductVat({
+      accounting_group_id: 'manual',
+      accounting_group_override: group(21, 21),
+      accounting_group: group(12, 6),
+    }, 'takeaway')).toBe(21);
+  });
+
+  it('uses category default accounting group when the product has no group', () => {
+    expect(resolveProductVat({
+      category: { default_accounting_group: group(12, 6) },
+    }, 'dine_in')).toBe(12);
+  });
+
+  it('uses legacy vat_rate only for products without an accounting group', () => {
+    expect(resolveProductVat({ vat_rate: 9 }, 'takeaway')).toBe(9);
+  });
+
+  it('returns a clear validation error when no tax configuration exists', () => {
+    expect(() => resolveProductVat({ name: 'Untaxed' }, 'takeaway')).toThrow('Missing VAT configuration for Untaxed');
+  });
+
+  it('rejects unsupported order types instead of reintroducing delivery', () => {
+    expect(() => resolveProductVat({ vat_rate: 6 }, 'delivery')).toThrow('Unsupported order type');
   });
 });

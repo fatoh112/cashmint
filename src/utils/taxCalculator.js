@@ -1,13 +1,54 @@
 const SCALE = 10000;
+const SUPPORTED_ORDER_TYPES = new Set(['dine_in', 'takeaway']);
 
 const round4 = (value) => Math.round((Number(value) + Number.EPSILON) * SCALE) / SCALE;
 const safeNumber = (value) => Math.max(0, Number.isFinite(Number(value)) ? Number(value) : 0);
+const hasNumber = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
 
-export function calculateOrderAccounting(cart = [], orderDiscount = 0) {
+const rateFromGroup = (group, orderType) => {
+  if (!group) return null;
+  const profile = group.tax_profiles || group.tax_profile || group.profile || group;
+  const rateObject = orderType === 'dine_in'
+    ? profile.dine_in_tax_rate || profile.dine_in_rate
+    : profile.takeaway_tax_rate || profile.takeaway_rate;
+  const directRate = orderType === 'dine_in'
+    ? profile.dine_in_vat_rate ?? profile.dine_in_rate_value
+    : profile.takeaway_vat_rate ?? profile.takeaway_rate_value;
+
+  if (hasNumber(rateObject?.rate)) return Number(rateObject.rate);
+  if (hasNumber(directRate)) return Number(directRate);
+  return null;
+};
+
+export function resolveProductVat(product = {}, orderType = 'takeaway') {
+  if (!SUPPORTED_ORDER_TYPES.has(orderType)) {
+    throw new Error(`Unsupported order type for VAT resolution: ${orderType}`);
+  }
+
+  const manualGroup = product.manual_accounting_group || product.accounting_group_override || product.accountingGroupOverride;
+  const productGroup = product.accounting_group || product.accountingGroup;
+  const categoryGroup = product.category?.default_accounting_group || product.category?.defaultAccountingGroup || product.default_accounting_group;
+
+  const resolvedRate = [
+    rateFromGroup(manualGroup, orderType),
+    rateFromGroup(productGroup, orderType),
+    rateFromGroup(categoryGroup, orderType),
+  ].find((rate) => hasNumber(rate));
+
+  if (hasNumber(resolvedRate)) return resolvedRate;
+  if (!product.accounting_group_id && hasNumber(product.vat_rate)) return Number(product.vat_rate);
+
+  throw new Error(`Missing VAT configuration for ${product.name || product.id || 'product'}`);
+}
+
+export function calculateOrderAccounting(cart = [], orderDiscount = 0, orderType = 'takeaway') {
   const sourceLines = cart.map((item) => {
     const modifiers = Array.isArray(item.selectedModifiers) ? item.selectedModifiers : [];
     const unitPriceInclVat = safeNumber(item.product?.price) + modifiers.reduce((sum, modifier) => sum + safeNumber(modifier.price_adjustment), 0);
     const quantity = Math.max(0, Math.trunc(safeNumber(item.quantity)));
+    const vatRate = hasNumber(item.product?.resolved_vat_rate)
+      ? Number(item.product.resolved_vat_rate)
+      : resolveProductVat(item.product, item.orderType || orderType);
     return {
       productId: item.product?.id || null,
       productName: item.product?.name || 'Unknown product',
@@ -15,7 +56,7 @@ export function calculateOrderAccounting(cart = [], orderDiscount = 0) {
       modifierIds: modifiers.map((modifier) => modifier.id).filter(Boolean),
       quantity,
       unitPriceInclVat: round4(unitPriceInclVat),
-      vatRate: safeNumber(item.product?.resolved_vat_rate ?? item.product?.vat_rate),
+      vatRate,
       grossBeforeDiscount: round4(unitPriceInclVat * quantity),
     };
   });

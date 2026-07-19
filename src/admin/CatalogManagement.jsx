@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
+import { buildProductPayload, canSubmitProductForm, effectiveAccountingGroupId, emptyProductForm } from '../utils/productTaxForm';
 import { 
   Plus, 
   Edit2, 
@@ -33,13 +34,8 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
-  const [productForm, setProductForm] = useState({
-    name: '',
-    category_id: '',
-    price: '',
-    accounting_group_id: '',
-    is_available: true
-  });
+  const [productForm, setProductForm] = useState(emptyProductForm);
+  const [savingProduct, setSavingProduct] = useState(false);
 
   const [modifierModalOpen, setModifierModalOpen] = useState(false);
   const [editingModifier, setEditingModifier] = useState(null);
@@ -100,6 +96,9 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     const takeaway = profile.takeaway_tax_rate?.rate;
     return `${group.name} — ${isArabic ? 'صالة' : 'Dine-in'} ${dineIn ?? '—'}% · ${isArabic ? 'سفري' : 'Takeaway'} ${takeaway ?? '—'}%`;
   };
+  const selectedAccountingGroup = accountingGroups.find(group => group.id === productForm.accounting_group_id);
+  const selectedAccountingProfile = selectedAccountingGroup?.tax_profiles;
+  const defaultGroupId = accountingGroups.find(g => g.is_default)?.id || '';
 
   useEffect(() => {
     if (store) {
@@ -173,18 +172,21 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   // --- Product CRUD ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
-    if (!productForm.name || !productForm.category_id || !productForm.price || !productForm.accounting_group_id) return;
+    if (savingProduct) return;
 
     const selectedCategory = categories.find(category => category.id === productForm.category_id);
+    const normalizedForm = {
+      ...productForm,
+      accounting_group_id: effectiveAccountingGroupId(productForm, selectedCategory, defaultGroupId)
+    };
+    if (!canSubmitProductForm(normalizedForm, savingProduct)) {
+      showNotification(isArabic ? 'اختر مجموعة محاسبية صالحة قبل حفظ المنتج.' : 'Choose a valid accounting group before saving the product.', 'error');
+      return;
+    }
 
     try {
-      const payload = {
-        name: productForm.name,
-        category_id: productForm.category_id,
-        price: parseFloat(productForm.price),
-        accounting_group_id: productForm.accounting_group_id,
-        accounting_group_is_override: Boolean(selectedCategory?.default_accounting_group_id && selectedCategory.default_accounting_group_id !== productForm.accounting_group_id)
-      };
+      setSavingProduct(true);
+      const payload = buildProductPayload(normalizedForm, selectedCategory);
 
       if (editingProduct) {
         const { error } = await supabase
@@ -202,11 +204,13 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       }
       setProductModalOpen(false);
       setEditingProduct(null);
-      setProductForm({ name: '', category_id: '', price: '', accounting_group_id: accountingGroups.find(g => g.is_default)?.id || '', is_available: true });
-      fetchCatalog();
+      setProductForm({ ...emptyProductForm, accounting_group_id: defaultGroupId });
+      await fetchCatalog();
     } catch (err) {
       console.error(err);
-      showNotification(isArabic ? "خطأ أثناء حفظ المنتج" : "Error saving product", "error");
+      showNotification(err.message || (isArabic ? "خطأ أثناء حفظ المنتج" : "Error saving product"), "error");
+    } finally {
+      setSavingProduct(false);
     }
   };
 
@@ -364,7 +368,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   onClick={() => {
                     setEditingProduct(null);
                     const firstCategory = categories[0];
-                    setProductForm({ name: '', category_id: firstCategory?.id || '', price: '', accounting_group_id: firstCategory?.default_accounting_group_id || accountingGroups.find(g => g.is_default)?.id || '', is_available: true });
+                    setProductForm({ ...emptyProductForm, category_id: firstCategory?.id || '', accounting_group_id: firstCategory?.default_accounting_group_id || defaultGroupId });
                     setProductModalOpen(true);
                   }}
                   className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-2 active:scale-95 transition-all shadow-sm shadow-amber-500/10"
@@ -414,7 +418,8 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                     name: product.name,
                                     category_id: product.category_id || '',
                                     price: product.price,
-                                    accounting_group_id: product.accounting_group_id || ''
+                                    accounting_group_id: product.accounting_group_id || '',
+                                    is_available: product.is_available ?? true
                                   });
                                   setProductModalOpen(true);
                                 }}
@@ -685,7 +690,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       onChange={(e) => {
                         const categoryId = e.target.value;
                         const category = categories.find(c => c.id === categoryId);
-                        setProductForm({ ...productForm, category_id: categoryId, accounting_group_id: category?.default_accounting_group_id || productForm.accounting_group_id });
+                        setProductForm({ ...productForm, category_id: categoryId, accounting_group_id: category?.default_accounting_group_id || productForm.accounting_group_id || defaultGroupId });
                       }}
                       className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
                       required
@@ -703,7 +708,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     <div>
                       <label className="text-xs font-black text-slate-800 block">{isArabic ? "مجموعة المحاسبة" : "Accounting Group"}</label>
                       <p className="text-[11px] leading-5 text-slate-500 mt-1">
-                        {isArabic ? "تحدد هذه المجموعة ملف الضريبة المشترك للمنتج حسب محلي أو سفري أو توصيل." : "This group applies the shared tax profile for dine-in, takeaway, and delivery orders."}
+                        {isArabic ? "تحدد هذه المجموعة ملف الضريبة المشترك للمنتج حسب محلي أو سفري." : "This group applies the shared tax profile for dine-in and takeaway orders."}
                       </p>
                     </div>
                     <span className="text-[10px] font-bold text-rose-500 whitespace-nowrap">{isArabic ? "مطلوب" : "Required"}</span>
@@ -728,14 +733,25 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     </button>
                   </div>
                   {!accountingGroups.length && <p className="text-[11px] text-amber-700 font-semibold">{isArabic ? 'أنشئ مجموعة محاسبية أولاً ثم اخترها للمنتج.' : 'Create an accounting group first, then assign it to this product.'}</p>}
+                  {selectedAccountingGroup && (
+                    <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
+                      <div className="rounded-xl bg-white border border-slate-200 px-3 py-2 text-slate-700">
+                        {isArabic ? 'صالة' : 'Dine-in'}: {selectedAccountingProfile?.dine_in_tax_rate?.rate ?? '—'}%
+                      </div>
+                      <div className="rounded-xl bg-white border border-slate-200 px-3 py-2 text-slate-700">
+                        {isArabic ? 'سفري' : 'Takeaway'}: {selectedAccountingProfile?.takeaway_tax_rate?.rate ?? '—'}%
+                      </div>
+                    </div>
+                  )}
                 </section>
               </div>
               <div className="p-5 border-t border-slate-100 bg-slate-50 flex gap-2">
                 <button
                   type="submit"
-                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs py-2.5 rounded-xl transition-all"
+                  disabled={!canSubmitProductForm(productForm, savingProduct)}
+                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs py-2.5 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isArabic ? "حفظ" : "Save"}
+                  {savingProduct ? (isArabic ? "جارٍ الحفظ..." : "Saving...") : (isArabic ? "حفظ" : "Save")}
                 </button>
                 <button
                   type="button"
