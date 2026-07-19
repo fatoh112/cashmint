@@ -138,16 +138,18 @@ The database structure evolves incrementally through version-controlled SQL file
 26. **`20260718002340_secure_onboarding_rpc_grants.sql`**: Revokes anonymous access to the onboarding RPC and grants it only to authenticated users.
 27. **`20260718002523_tighten_logo_listing.sql`**: Removes broad logo-object listing access from the public bucket.
 28. **`20260718003815_fix_logo_storage_upsert_policy.sql`**: Adds the scoped Storage SELECT policy required for authenticated logo replacement via upsert.
-29. **`20260718010000_stripe_connect_architecture.sql`**: Adds Stripe Connect account/state tables, tenant-safe read access, and blocks all browser writes to the OAuth state and connection records.
-30. **`20260718020000_accounting_groups_tax_profiles.sql`**: Adds editable tax rates/profiles/accounting groups, Belgium-oriented review templates, cross-store integrity checks, and non-destructive legacy product assignment. It does not alter historical order snapshots.
-31. **`20260719020514_allow_store_users_to_check_terminal_availability.sql`**: Allows mapped store users to call `terminal_payment_availability` while preserving the terminal's own authorization path.
-32. **`20260718010000_add_terminal_payments.sql`**: Adds restaurant/location payment configuration, terminal devices, payment requests, and the Android Stripe Terminal foundation.
-33. **`20260718020000_terminal_enrollment_codes.sql`**: Adds single-use terminal enrollment codes and the bridge enrollment/heartbeat authorization model.
-34. **`20260718022000_trusted_tax_checkout.sql`**: Introduces the trusted `create_accounting_order` tax-aware checkout path.
+29. **`20260718010000_add_terminal_payments.sql`**: Adds restaurant/location payment configuration, terminal devices, payment requests, and the Android Stripe Terminal foundation.
+30. **`20260718010000_stripe_connect_architecture.sql`**: Adds Stripe Connect account/state tables, tenant-safe read access, and blocks all browser writes to the OAuth state and connection records.
+31. **`20260718020000_accounting_groups_tax_profiles.sql`**: Adds editable tax rates/profiles/accounting groups, Belgium-oriented review templates, cross-store integrity checks, and non-destructive legacy product assignment. It does not alter historical order snapshots.
+32. **`20260718020000_terminal_enrollment_codes.sql`**: Adds single-use terminal enrollment codes and the bridge enrollment/heartbeat authorization model.
+33. **`20260718022000_trusted_tax_checkout.sql`**: Introduces the trusted `create_accounting_order` tax-aware checkout path.
+34. **`20260718030000_accounting_groups_need_configuration.sql`**: Allows `tax_profile_id` to be nullable in `accounting_groups` for initial category/group catalog setup, enforcing store-level checks.
 35. **`20260718190000_terminal_bridge_hardening.sql`** and **`20260718210000_restaurant1_terminal_payment_deploy.sql`**: Harden and deploy terminal bridge/payment behavior.
 36. **`20260719010000_category_tax_defaults_and_bundle_components.sql`**: Adds category default Accounting Groups and `product_bundle_components`.
 37. **`20260719020000_tax_safe_combos_and_category_overrides.sql`**: Adds product override protection, bundle component snapshots, safe category bulk-apply, and server-side combo VAT allocation.
-38. **`20260719030000_pos_bundle_tax_preview.sql`**: Includes bundle components in the POS catalog so the browser can display a per-component VAT preview; checkout remains server-authoritative.
+38. **`20260719020514_allow_store_users_to_check_terminal_availability.sql`**: Allows mapped store users to call `terminal_payment_availability` while preserving the terminal's own authorization path.
+39. **`20260719030000_pos_bundle_tax_preview.sql`**: Includes bundle components in the POS catalog so the browser can display a per-component VAT preview; checkout remains server-authoritative.
+40. **`20260719084000_terminal_card_completion_rpcs.sql`**: Ensures Stripe Terminal webhooks can complete or cancel accounting card orders through `complete_accounting_card_payment` and `cancel_accounting_card_payment` security-definer RPCs.
 
 ---
 
@@ -201,11 +203,14 @@ cashpilot/
 │   │   ├── 20260718020000_accounting_groups_tax_profiles.sql
 │   │   ├── 20260718020000_terminal_enrollment_codes.sql
 │   │   ├── 20260718022000_trusted_tax_checkout.sql
+│   │   ├── 20260718030000_accounting_groups_need_configuration.sql
 │   │   ├── 20260718190000_terminal_bridge_hardening.sql
 │   │   ├── 20260718210000_restaurant1_terminal_payment_deploy.sql
 │   │   ├── 20260719010000_category_tax_defaults_and_bundle_components.sql
 │   │   ├── 20260719020000_tax_safe_combos_and_category_overrides.sql
-│   │   └── 20260719030000_pos_bundle_tax_preview.sql
+│   │   ├── 20260719020514_allow_store_users_to_check_terminal_availability.sql
+│   │   ├── 20260719030000_pos_bundle_tax_preview.sql
+│   │   └── 20260719084000_terminal_card_completion_rpcs.sql
 │   └── functions/                    # Deno Edge Functions
 │       ├── ai-business-analyst/      # Deno-Kimi Business Chatcompletion proxy endpoint
 │       ├── ai-menu-assistant/        # OCR Vision extraction endpoint
@@ -239,11 +244,14 @@ cashpilot/
     │   ├── CatalogManagement.jsx     # Products, Categories, & Modifiers CRUD
     │   ├── IntegrationSettings.jsx   # Hardware (Printer IP) & Stripe / HubRise configuration
     │   ├── SalesHistory.jsx          # Revenue logs, Top Sellers list, & receipt reprinting
+    │   ├── TaxManagement.jsx         # Tax settings, profiles, rates, and accounting groups CRUD
     │   └── AccountantExports.jsx     # CSV sales/VAT/payment exports and daily-closing controls
     ├── components/                   # Reusable UI components
     │   ├── OnboardingWizard.jsx      # Setup flow for new store mappings
     │   └── admin/                    # Admin components
     │       ├── AIChatWidget.jsx      # Floating AI Business Analyst widget
+    │       ├── ComboBuilderForm.jsx  # Reusable combo builder for allocating weights/quantities to bundle components
+    │       ├── CsvImportModal.jsx    # Advanced CSV catalog bulk-importer modal with Excel BOM prefixing
     │       ├── GroupConfigForm.jsx   # Group options configuration details form
     │       └── ItemsDashboard.jsx    # Advanced menu & options layout with AI OCR import
     ├── providers/
@@ -327,6 +335,8 @@ Builds SOAP XML envelopes for thermal printers:
 3. **Iframe Fallback (CORS/HTTP Bypass):**
    - If direct fetch to the local printer IP fails (due to CORS blockages or mixed-content SSL limits), it triggers `printViaIframeFallback`.
    - Generates a hidden `<iframe>` loaded with a styled 72mm receipt layout and calls the browser's native print engine.
+4. **Resilient Automatic Printing:**
+   - In automatic print modes, the print service is called with `{ skipFallback: true }`. This skips the browser iframe print dialog fallback if direct network ePOS print fails, preventing blocking prompts that interrupt cashier checkouts.
 
 ```javascript
 export async function printReceipt(order, printerIP, storeName = 'Cashmint', options = {}) {
@@ -579,6 +589,22 @@ Coordinates advanced option configurations and AI menu imports.
 - VAT classifications and rates should be reviewed with the store accountant. Cashmint exports structured accounting and VAT records for accountant review. It is not currently a certified Belgian GKS/Blackbox system.
 - Future cleanup: do not remove `products.vat_rate` until every product uses an accounting group and production migration/reporting verification is complete.
 
+### R. Tax Settings and Advanced Profiles (`src/admin/TaxManagement.jsx`)
+- Establishes relational mapping from a sellable Product -> Accounting Group -> Tax Profile -> Tax Rates (for dine-in, takeaway, delivery, or a fallback default).
+- Allows creation, editing, status toggling, and deletion of Accounting Groups (deletion is blocked if any active catalog products reference that group).
+- Provides settings to map custom tax rates for Dine-in, Takeaway, and Delivery under custom Tax Profiles.
+- Warns users about unconfigured accounting groups. While catalog edits remain possible, checkout is blocked on any item mapped to an unconfigured accounting group until a valid profile is linked.
+
+### S. Combo Package Builder (`src/components/admin/ComboBuilderForm.jsx`)
+- Manages the expansion of sellable combo/bundle items into constituent products through `product_bundle_components`.
+- Lets store managers select a catalog product to act as the combo, then define its component items, quantity, and reference `allocation_weight`.
+- Facilitates server-side allocation of the combo price and VAT based on component weights and reference prices. The checkout process remains fully server-authoritative and does not rely on client-supplied price or tax.
+
+### T. CSV Menu Catalog Importer (`src/components/admin/CsvImportModal.jsx`)
+- Supports importing categories, products, prices, option groups, and modifier options in bulk from a CSV template.
+- Implements auto-detection of delimiters (supporting commas, semicolons, etc.) and price string sanitization (handling comma/dot decimal conventions).
+- Prefixes a UTF-8 BOM byte sequence when downloading the CSV template. This guarantees correct character encoding and formatting when the file is opened in Microsoft Excel.
+
 ## 5. Summary of Development Milestones
 
 1. **Authentication & Multi-Tenant Setup:** Role-based POS gateway (Admin/Cashier) with row-level security (RLS).
@@ -599,3 +625,7 @@ Coordinates advanced option configurations and AI menu imports.
 16. **Global System Maintenance & Backup Config:** Integrated database-level configurations (`system_settings`) allowing superadmins to dynamically toggled maintenance blocks and backup settings platform-wide.
 17. **Central SaaS Host Routing & Performance:** Configured hostname-based routing for Master dashboard access on `cashmint.online` and introduced tree-shaken lazy-loaded dashboard components.
 18. **Session Resilience & JWT Error Handling:** Added automatic cleanups of local storage data on user switch and intercepting of 401 token expiration errors to automatically logout and refresh the cashier terminal.
+19. **Tax-Safe Combo & Category Default Groups:** Added the Combo Builder component, letting users select bundle components with quantity and allocation weights to distribute price and VAT server-side at checkout. Allowed default accounting groups on categories to auto-inherit for new products.
+20. **CSV Menu Import & Excel Compatibility:** Integrated `CsvImportModal` with intelligent delimiter detection and UTF-8 BOM encoding for correct Arabic character handling in Excel, facilitating quick catalog setup.
+21. **Robust Checkout Completion & Webhooks:** Deployed secure webhook completion and cancellation RPC functions for Stripe Terminal card orders, ensuring synchronized status between the Android payment bridge, Stripe Terminal API, and checkout orders.
+22. **Silent Automated Receipts:** Configured direct printer SOAP requests to skip browser print prompt fallbacks during automatic print operations, eliminating GUI blockages when direct printing is offline.
