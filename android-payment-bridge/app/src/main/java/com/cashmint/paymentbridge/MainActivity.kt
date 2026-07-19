@@ -89,7 +89,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         super.onCreate(savedInstanceState)
         buildUi()
         credentials = BridgeCredentials(this)
-        api = BridgeApi(credentials.supabaseUrl, credentials.anonKey) { credentials.accessToken() }
+        api = BridgeApi(credentials.supabaseUrl, credentials.anonKey, { credentials.accessToken() }, { credentials.realtimeKey().ifBlank { credentials.anonKey } })
         if (credentials.enrolled()) requestPermissionsIfNeeded() else showEnrollment()
     }
 
@@ -139,6 +139,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             retryDiscoveryOnResume = false
             prepareReaderDiscovery()
         }
+        if (::credentials.isInitialized && credentials.enrolled()) BridgeWorker.requestServerSync()
     }
 
     private fun showEnrollment() {
@@ -172,13 +173,13 @@ class MainActivity : AppCompatActivity(), TerminalListener {
             status.text = "Supabase URL, anon key, and enrollment code are required."
             return
         }
-        api = BridgeApi(url, anonKey) { credentials.accessToken() }
+        api = BridgeApi(url, anonKey, { credentials.accessToken() })
         status.text = "Registering terminal device..."
         api.enroll(code, displayName) { result ->
             runOnUiThread {
                 result.onSuccess {
                     credentials.saveEnrollment(it)
-                    api = BridgeApi(credentials.supabaseUrl, credentials.anonKey) { credentials.accessToken() }
+                    api = BridgeApi(credentials.supabaseUrl, credentials.anonKey, { credentials.accessToken() }, { credentials.realtimeKey().ifBlank { credentials.anonKey } })
                     prepareReaderDiscovery()
                 }.onFailure {
                     status.text = "Enrollment failed: ${it.message}"
@@ -288,7 +289,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
                 override fun onForwardingFailure(e: TerminalException) = Unit
             })
         }
-        BridgeWorker.start(this, api, ::onClaimedPaymentRequest, ::onCancelRequested)
+        BridgeWorker.start(this, api, ::onClaimedPaymentRequest, ::onCancelRequested, ::onServerIdle)
         readerDetails.text = "Reader: ready\nMode: physical WisePad 3\nTap Discover / reconnect WisePad 3 when the reader is awake."
         status.text = "Cashmint payment bridge ready"
         renderDiagnostics()
@@ -587,6 +588,28 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         }
     }
 
+    private fun onServerIdle() {
+        val staleRequestId = activeRequestId ?: credentials.activeRequestId()
+        finalizedRequests.add(staleRequestId.orEmpty())
+        paymentGeneration += 1
+        processRetryUsed = false
+        activeRequestId = null
+        credentials.setActiveRequestId(null)
+        val cancelable = paymentCancelable
+        paymentCancelable = null
+        cancelable?.cancel(emptyCallback)
+        runOnUiThread {
+            retryButton.isEnabled = false
+            status.text = "Cashmint payment bridge ready"
+            paymentDetails.text = if (staleRequestId.isNullOrBlank()) {
+                "Payment request: none\nState: idle"
+            } else {
+                "Payment request: none\nState: idle\nLast completed request: $staleRequestId"
+            }
+            renderDiagnostics()
+        }
+    }
+
     private fun processPaymentOnce(requestId: String, generation: Int, intent: PaymentIntent) {
         BridgeWorker.setReaderAction(ReaderActionState.PROCESSING)
         paymentCancelable = Terminal.getInstance().processPaymentIntent(
@@ -828,7 +851,7 @@ class MainActivity : AppCompatActivity(), TerminalListener {
         } }
     }
 
-    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.12" }
+    private fun renderDiagnostics() { diagnostics.text = "Diagnostics\n${BridgeWorker.diagnostics()}\nStripe: ${if (Terminal.isInitialized()) "initialized" else "not initialized"}\nApp version: 1.0.15" }
 
     override fun onConnectionStatusChange(status: ConnectionStatus) { runOnUiThread { renderDiagnostics() } }
     override fun onPaymentStatusChange(status: PaymentStatus) { runOnUiThread { renderDiagnostics() } }

@@ -12,6 +12,7 @@ class BridgeCredentials(context: Context) {
     private val prefs = EncryptedSharedPreferences.create(context, "cashmint_bridge", masterKey, EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM)
     val supabaseUrl: String get() = prefs.getString("supabase_url", "") ?: ""
     val anonKey: String get() = prefs.getString("anon_key", "") ?: ""
+    fun realtimeKey(): String = prefs.getString("realtime_key", "") ?: ""
     val deviceId: String get() = prefs.getString("device_id", "") ?: ""
     val locationId: String get() = prefs.getString("location_id", "") ?: ""
     val stripeLocationId: String get() = prefs.getString("stripe_location_id", "") ?: ""
@@ -29,6 +30,7 @@ class BridgeCredentials(context: Context) {
         prefs.edit()
             .putString("supabase_url", json.getString("supabase_url"))
             .putString("anon_key", json.getString("anon_key"))
+            .putString("realtime_key", json.optString("realtime_key", json.getString("anon_key")))
             .putString("device_id", json.getString("device_id"))
             .putString("location_id", json.getString("location_id"))
             .putString("stripe_location_id", json.optString("stripe_location_id"))
@@ -39,6 +41,7 @@ class BridgeCredentials(context: Context) {
             .putLong("expires_at", session.optLong("expires_at", 0L))
             .apply()
     }
+    fun saveRealtimeKey(value: String) = prefs.edit().putString("realtime_key", value).apply()
     fun saveSession(session: JSONObject) {
         prefs.edit()
             .putString("access_token", session.getString("access_token"))

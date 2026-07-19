@@ -12,7 +12,12 @@ import java.util.Locale
 import java.util.TimeZone
 
 /** All amounts stay server-side. This client can only claim and process a request ID. */
-class BridgeApi(private val baseUrl: String, private val anonKey: String, private val accessToken: () -> String) {
+class BridgeApi(
+    private val baseUrl: String,
+    private val anonKey: String,
+    private val accessToken: () -> String,
+    private val realtimeKey: () -> String = { anonKey },
+) {
     private val http = OkHttpClient.Builder()
         .callTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -33,6 +38,28 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
     fun enroll(code: String, displayName: String, done: (Result<JSONObject>) -> Unit) = call("register-terminal-device", JSONObject().put("enrollment_code", code).put("display_name", displayName), done, authenticated = false) { it }
     fun cancelPayment(id: String, done: (Result<JSONObject>) -> Unit) = call("cancel-terminal-payment", JSONObject().put("payment_request_id", id), done) { it }
     fun function(path: String, body: JSONObject, done: (Result<JSONObject>) -> Unit) = call(path, body, done) { it }
+    fun fetchRealtimeKey(done: (Result<String>) -> Unit) = call("terminal-realtime-key", JSONObject(), done) { it.getString("realtime_key") }
+    fun terminalDevice(deviceId: String, done: (Result<JSONObject>) -> Unit) {
+        val request = Request.Builder()
+            .url("$baseUrl/rest/v1/terminal_devices?select=id,reader_status,reader_action_status,current_payment_request_id,app_version,last_heartbeat_at,cleanup_completed_at&id=eq.$deviceId&limit=1")
+            .header("apikey", anonKey)
+            .header("Authorization", "Bearer ${accessToken()}")
+            .get()
+            .build()
+        http.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) = done(Result.failure(e))
+            override fun onResponse(call: Call, response: Response) { response.use { r ->
+                try {
+                    val raw = r.body?.string().orEmpty()
+                    if (!r.isSuccessful) { done(Result.failure(IOException(safeError(raw, r.code)))); return }
+                    val array = org.json.JSONArray(raw)
+                    done(Result.success(if (array.length() > 0) array.getJSONObject(0) else JSONObject()))
+                } catch (e: Exception) {
+                    done(Result.failure(e))
+                }
+            } }
+        })
+    }
     fun refreshSession(refreshToken: String, done: (Result<JSONObject>) -> Unit) {
         val body = JSONObject().put("refresh_token", refreshToken).toString()
         val request = Request.Builder()
@@ -67,21 +94,17 @@ class BridgeApi(private val baseUrl: String, private val anonKey: String, privat
     }
     fun realtimeSocket(): WebSocket {
         val realtimeUrl = baseUrl.replace("https://", "wss://").replace("http://", "ws://")
-        val token = URLEncoder.encode(accessToken(), "UTF-8")
-        val key = URLEncoder.encode(anonKey, "UTF-8")
+        val key = URLEncoder.encode(realtimeKey(), "UTF-8")
         val request = Request.Builder()
-            .url("$realtimeUrl/realtime/v1/websocket?apikey=$key&access_token=$token&vsn=1.0.0")
-            .header("Authorization", "Bearer ${accessToken()}")
+            .url("$realtimeUrl/realtime/v1/websocket?apikey=$key&vsn=1.0.0")
             .build()
         return http.newWebSocket(request, object : WebSocketListener() {})
     }
     fun openRealtime(listener: WebSocketListener): WebSocket {
         val realtimeUrl = baseUrl.replace("https://", "wss://").replace("http://", "ws://")
-        val token = URLEncoder.encode(accessToken(), "UTF-8")
-        val key = URLEncoder.encode(anonKey, "UTF-8")
+        val key = URLEncoder.encode(realtimeKey(), "UTF-8")
         val request = Request.Builder()
-            .url("$realtimeUrl/realtime/v1/websocket?apikey=$key&access_token=$token&vsn=1.0.0")
-            .header("Authorization", "Bearer ${accessToken()}")
+            .url("$realtimeUrl/realtime/v1/websocket?apikey=$key&vsn=1.0.0")
             .build()
         return http.newWebSocket(request, listener)
     }

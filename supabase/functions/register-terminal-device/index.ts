@@ -97,6 +97,17 @@ Deno.serve(async (req) => {
     const { data: redeemed, error: redemptionError } = await db.from('terminal_enrollment_codes').update({ redeemed_at: new Date().toISOString(), redeemed_by_device_id: device.id }).eq('id', enrollment.id).is('redeemed_at', null).select('id').maybeSingle()
     if (redemptionError) { logFailure('enrollment_redemption', redemptionError); await db.from('terminal_devices').delete().eq('id', device.id); await deleteBridge(); return failure('enrollment_redemption_failed', 'Could not redeem enrollment code', 500, safeDbDetails(redemptionError)) }
     if (!redeemed) { await db.from('terminal_devices').delete().eq('id', device.id); await deleteBridge(); return failure('enrollment_already_redeemed', 'Enrollment code was redeemed concurrently', 409) }
-    return json({ device_id:device.id, restaurant_id:device.restaurant_id, location_id:device.location_id, restaurant_name:location?.restaurants?.name, location_name:location?.name, stripe_location_id:config.provider_config?.stripe_location_id ?? null, session, supabase_url:Deno.env.get('SUPABASE_URL'), anon_key:Deno.env.get('SUPABASE_ANON_KEY') })
+    return json({
+      device_id: device.id,
+      restaurant_id: device.restaurant_id,
+      location_id: device.location_id,
+      restaurant_name: location?.restaurants?.name,
+      location_name: location?.name,
+      stripe_location_id: config.provider_config?.stripe_location_id ?? null,
+      session,
+      supabase_url: Deno.env.get('SUPABASE_URL'),
+      anon_key: Deno.env.get('SUPABASE_ANON_KEY'),
+      realtime_key: Deno.env.get('REALTIME_API_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY'),
+    })
   } catch (error) { logFailure('unexpected', error); return failure('enrollment_failed', 'Enrollment could not be completed', 500) }
 })
