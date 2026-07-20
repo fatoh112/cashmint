@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import CatalogManagement from './CatalogManagement';
 import IntegrationSettings from './IntegrationSettings';
 import SalesHistory from './SalesHistory';
+import FullTransactionHistory from './FullTransactionHistory';
 import AccountantExports from './AccountantExports';
 import TaxManagement from './TaxManagement';
 const OnboardingWizard = React.lazy(() => import('../components/OnboardingWizard'));
@@ -19,7 +20,8 @@ import {
   Moon,
   Pencil,
   FileText,
-  ReceiptText
+  ReceiptText,
+  History
 } from 'lucide-react';
 
 export default function AdminDashboard({ store, setStore, session, setView: _setView, showNotification, isArabic, setIsArabic, theme, setTheme }) {
@@ -321,7 +323,20 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
               }`}
             >
               <BarChart3 className="w-4 h-4" />
-              <span>{isArabic ? "لوحة المبيعات والتقارير" : "Sales History & Analytics"}</span>
+              <span>{isArabic ? "لوحة المبيعات (آخر 24 ساعة)" : "Sales Dashboard (24 Hours)"}</span>
+            </button>
+
+            {/* Full Transaction History */}
+            <button
+              onClick={() => setActiveModule('full_history')}
+              className={`w-full px-4 py-3 rounded-xl font-bold text-xs transition-all flex items-center gap-3 cursor-pointer ${
+                activeModule === 'full_history'
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/10'
+                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-750 hover:text-slate-800 dark:hover:text-white'
+              }`}
+            >
+              <History className="w-4 h-4" />
+              <span>{isArabic ? "سجل المعاملات بالكامل" : "Full Transaction History"}</span>
             </button>
 
             {/* Catalog CRUD */}
@@ -406,6 +421,14 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
               store={store} 
               showNotification={showNotification} 
               isArabic={isArabic} 
+            />
+          )}
+
+          {activeModule === 'full_history' && (
+            <FullTransactionHistory
+              store={store}
+              showNotification={showNotification}
+              isArabic={isArabic}
             />
           )}
 
