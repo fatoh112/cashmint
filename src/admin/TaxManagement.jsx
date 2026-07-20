@@ -47,7 +47,7 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
       if (g.error || p.error || r.error || productsResult.error) {
         throw g.error || p.error || r.error || productsResult.error;
       }
-      setGroups(g.data || []);
+      setGroups((g.data || []).filter(group => !group.is_internal && !group.name?.startsWith('__direct_vat_')));
       setProfiles(p.data || []);
       setRates(r.data || []);
       setProducts(productsResult.data || []);

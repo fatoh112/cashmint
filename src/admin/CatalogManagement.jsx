@@ -101,6 +101,14 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
   const accountingGroupLabel = (group) => {
     if (!group) return isArabic ? 'يحتاج إعداد الضريبة' : 'Needs configuration';
+    const profile = group.tax_profiles;
+    const dineIn = profile?.dine_in_tax_rate?.rate;
+    const takeaway = profile?.takeaway_tax_rate?.rate;
+
+    if (group.is_internal || group.name?.startsWith('__direct_vat_')) {
+      return `${isArabic ? 'ضريبة مباشرة للمنتج' : 'Direct Product VAT'} — ${isArabic ? 'صالة' : 'Dine-in'} ${dineIn ?? '—'}% · ${isArabic ? 'سفري' : 'Takeaway'} ${takeaway ?? '—'}%`;
+    }
+
     let groupName = group.name;
     if (isArabic) {
       if (groupName === 'Food') groupName = 'طعام';
@@ -111,14 +119,11 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       groupName = 'Non-Alcoholic Drinks';
     }
 
-    const profile = group.tax_profiles;
     if (!profile) return `${groupName} — ${isArabic ? 'يحتاج إعداد ضريبة' : 'Tax setup required'}`;
-    const dineIn = profile.dine_in_tax_rate?.rate;
-    const takeaway = profile.takeaway_tax_rate?.rate;
     return `${groupName} — ${isArabic ? 'صالة' : 'Dine-in'} ${dineIn ?? '—'}% · ${isArabic ? 'سفري' : 'Takeaway'} ${takeaway ?? '—'}%`;
   };
 
-  const selectableAccountingGroups = accountingGroups.filter(g => g.name !== 'Other' && g.name !== 'Unassigned / Legacy');
+  const selectableAccountingGroups = accountingGroups.filter(g => !g.is_internal && g.name !== 'Other' && g.name !== 'Unassigned / Legacy' && !g.name?.startsWith('__direct_vat_'));
   const selectedAccountingGroup = accountingGroups.find(group => group.id === productForm.accounting_group_id);
   const selectedAccountingProfile = selectedAccountingGroup?.tax_profiles;
   const defaultGroupId = selectableAccountingGroups.find(g => g.is_default)?.id || selectableAccountingGroups[0]?.id || '';
@@ -174,6 +179,63 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     }
   };
 
+  // Direct Per-Product VAT State
+  const [directVatForm, setDirectVatForm] = useState({
+    dine_in_rate: '12',
+    takeaway_rate: '6'
+  });
+
+  const resolveOrCreateInternalDirectVatGroup = async (dineInRate, takeawayRate) => {
+    const dineInNum = Number(dineInRate);
+    const takeawayNum = Number(takeawayRate);
+    const internalName = `__direct_vat_${dineInNum}_${takeawayNum}`;
+
+    let { data: existingGroup } = await supabase
+      .from('accounting_groups')
+      .select('id')
+      .eq('store_id', store.id)
+      .eq('name', internalName)
+      .maybeSingle();
+
+    if (existingGroup) {
+      return existingGroup.id;
+    }
+
+    let { data: rDine } = await supabase.from('tax_rates').select('id').eq('store_id', store.id).eq('rate', dineInNum).maybeSingle();
+    if (!rDine) {
+      const { data: newRDine, error: rDineErr } = await supabase.from('tax_rates').insert({ store_id: store.id, name: `VAT ${dineInNum}%`, rate: dineInNum, is_active: true }).select('id').single();
+      if (rDineErr) throw rDineErr;
+      rDine = newRDine;
+    }
+
+    let { data: rTake } = await supabase.from('tax_rates').select('id').eq('store_id', store.id).eq('rate', takeawayNum).maybeSingle();
+    if (!rTake) {
+      const { data: newRTake, error: rTakeErr } = await supabase.from('tax_rates').insert({ store_id: store.id, name: `VAT ${takeawayNum}%`, rate: takeawayNum, is_active: true }).select('id').single();
+      if (rTakeErr) throw rTakeErr;
+      rTake = newRTake;
+    }
+
+    const profileName = `Direct VAT Profile (${dineInNum}% / ${takeawayNum}%)`;
+    let { data: pExist } = await supabase.from('tax_profiles').select('id').eq('store_id', store.id).eq('dine_in_tax_rate_id', rDine.id).eq('takeaway_tax_rate_id', rTake.id).maybeSingle();
+    if (!pExist) {
+      const { data: newP, error: newPErr } = await supabase.from('tax_profiles').insert({ store_id: store.id, name: profileName, dine_in_tax_rate_id: rDine.id, takeaway_tax_rate_id: rTake.id, is_active: true }).select('id').single();
+      if (newPErr) throw newPErr;
+      pExist = newP;
+    }
+
+    const { data: newInternalGroup, error: groupErr } = await supabase.from('accounting_groups').insert({
+      store_id: store.id,
+      name: internalName,
+      tax_profile_id: pExist.id,
+      is_active: true,
+      is_default: false,
+      is_internal: true
+    }).select('id').single();
+
+    if (groupErr) throw groupErr;
+    return newInternalGroup.id;
+  };
+
   // --- Product CRUD ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
@@ -184,19 +246,30 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       return;
     }
 
-    if (!productForm.accounting_group_id) {
-      showNotification(isArabic ? 'يرجى اختيار مجموعة محاسبية صالحة للمنتج' : 'Please select a valid Accounting Group for the product', 'error');
+    let targetGroupId = productForm.accounting_group_id;
+    if (targetGroupId === '__create_custom_group__') {
+      showNotification(isArabic ? 'يرجى إكمال إنشاء المجموعة المخصصة أو اختيار مجموعة أخرى' : 'Please complete custom group creation or select another group', 'error');
       return;
     }
 
-    if (!canSubmitProductForm(productForm, savingProduct)) {
-      showNotification(isArabic ? 'يرجى إدخال جميع بيانات المنتج المطلوبة بصورة صحيحة.' : 'Please fill in all required product fields correctly.', 'error');
+    if (!targetGroupId) {
+      showNotification(isArabic ? 'يرجى اختيار مجموعة محاسبية صالحة أو تحديد الضريبة مباشرة للمنتج' : 'Please select a valid Accounting Group or set direct VAT for product', 'error');
       return;
     }
 
     try {
       setSavingProduct(true);
-      const payload = buildProductPayload(productForm);
+      if (targetGroupId === '__product_direct_vat__') {
+        targetGroupId = await resolveOrCreateInternalDirectVatGroup(directVatForm.dine_in_rate, directVatForm.takeaway_rate);
+      }
+
+      const payload = {
+        name: productForm.name.trim(),
+        category_id: productForm.category_id || null,
+        price: parseFloat(productForm.price),
+        accounting_group_id: targetGroupId,
+        is_available: productForm.is_available
+      };
 
       if (editingProduct) {
         const { error } = await supabase
@@ -510,13 +583,33 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                 onClick={() => {
                                   setEditingProduct(product);
                                   setShowInlineCustomGroup(false);
-                                  setProductForm({
-                                    name: product.name,
-                                    category_id: product.category_id || '',
-                                    price: product.price,
-                                    accounting_group_id: needsConfig ? '' : (product.accounting_group_id || ''),
-                                    is_available: product.is_available ?? true
-                                  });
+                                  const isInternalDirectVat = assignedGroup?.is_internal || assignedGroup?.name?.startsWith('__direct_vat_');
+
+                                  if (isInternalDirectVat) {
+                                    const profile = assignedGroup?.tax_profiles;
+                                    const dineIn = profile?.dine_in_tax_rate?.rate ?? 12;
+                                    const takeaway = profile?.takeaway_tax_rate?.rate ?? 6;
+
+                                    setDirectVatForm({
+                                      dine_in_rate: String(dineIn),
+                                      takeaway_rate: String(takeaway)
+                                    });
+                                    setProductForm({
+                                      name: product.name,
+                                      category_id: product.category_id || '',
+                                      price: product.price,
+                                      accounting_group_id: '__product_direct_vat__',
+                                      is_available: product.is_available ?? true
+                                    });
+                                  } else {
+                                    setProductForm({
+                                      name: product.name,
+                                      category_id: product.category_id || '',
+                                      price: product.price,
+                                      accounting_group_id: needsConfig ? '' : (product.accounting_group_id || ''),
+                                      is_available: product.is_available ?? true
+                                    });
+                                  }
                                   setProductModalOpen(true);
                                 }}
                                 className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600 flex items-center justify-center transition-all"
@@ -551,7 +644,6 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   onClick={() => {
                     setEditingCategory(null);
                     setCategoryName('');
-                    setCategoryAccountingGroupId('');
                     setCategoryModalOpen(true);
                   }}
                   className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-2 active:scale-95 transition-all shadow-sm shadow-amber-500/10"
@@ -805,6 +897,9 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     >
                       <option value="" disabled>{isArabic ? '— اختر مجموعة محاسبية —' : '— Select an accounting group —'}</option>
                       {selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}
+                      <option value="__product_direct_vat__" className="font-bold text-blue-600 bg-blue-50">
+                        {isArabic ? "⚡ تحديد الضريبة مباشرة للمنتج" : "⚡ Set VAT directly for product"}
+                      </option>
                       <option value="__create_custom_group__" className="font-bold text-amber-600 bg-amber-50">
                         {isArabic ? "➕ ضريبة أخرى / مجموعة مخصصة" : "➕ Other / Custom Group"}
                       </option>
@@ -818,6 +913,36 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       {isArabic ? 'إدارة المجموعات' : 'Manage accounting groups'}
                     </button>
                   </div>
+
+                  {productForm.accounting_group_id === '__product_direct_vat__' && !showInlineCustomGroup && (
+                    <div className="mt-3 p-4 rounded-xl bg-blue-50/70 border border-blue-200 text-right space-y-3">
+                      <h4 className="font-black text-xs text-blue-900">
+                        {isArabic ? "تحديد الضريبة مباشرة للمنتج" : "Set VAT Directly for Product"}
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-600 block">{isArabic ? "ضريبة الصالة" : "Dine-in VAT"}</label>
+                          <select
+                            value={directVatForm.dine_in_rate}
+                            onChange={(e) => setDirectVatForm({ ...directVatForm, dine_in_rate: e.target.value })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-blue-500"
+                          >
+                            {[21, 12, 6, 0].map(r => <option key={`direct-dine-${r}`} value={r}>{r}%</option>)}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-600 block">{isArabic ? "ضريبة السفري" : "Takeaway VAT"}</label>
+                          <select
+                            value={directVatForm.takeaway_rate}
+                            onChange={(e) => setDirectVatForm({ ...directVatForm, takeaway_rate: e.target.value })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-blue-500"
+                          >
+                            {[21, 12, 6, 0].map(r => <option key={`direct-take-${r}`} value={r}>{r}%</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {showInlineCustomGroup && (
                     <div className="mt-3 p-4 rounded-xl bg-amber-50/70 border border-amber-200 text-right space-y-3">
