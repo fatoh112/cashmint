@@ -6,8 +6,8 @@ export const emptyProductForm = {
   is_available: true,
 };
 
-export function effectiveAccountingGroupId(form, category, fallbackGroupId = '') {
-  return form.accounting_group_id || category?.default_accounting_group_id || fallbackGroupId || '';
+export function effectiveAccountingGroupId(form, _category, _fallbackGroupId = '') {
+  return form.accounting_group_id || '';
 }
 
 export function canSubmitProductForm(form, isSaving = false) {
@@ -20,15 +20,16 @@ export function canSubmitProductForm(form, isSaving = false) {
     && Boolean(form.accounting_group_id);
 }
 
-export function buildProductPayload(form, category) {
-  const groupId = effectiveAccountingGroupId(form, category);
+export function buildProductPayload(form, _category) {
+  const groupId = form.accounting_group_id;
+  if (!form.category_id) throw new Error('Product requires a valid category');
   if (!groupId) throw new Error('Product requires an accounting group');
   return {
     name: form.name.trim(),
     category_id: form.category_id,
     price: Number(form.price),
     accounting_group_id: groupId,
-    accounting_group_is_override: Boolean(category?.default_accounting_group_id && category.default_accounting_group_id !== groupId),
+    accounting_group_is_override: false,
     vat_rate: null,
   };
 }

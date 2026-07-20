@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
-import { buildProductPayload, canSubmitProductForm, effectiveAccountingGroupId, emptyProductForm } from '../utils/productTaxForm';
+import { buildProductPayload, canSubmitProductForm, emptyProductForm } from '../utils/productTaxForm';
 import { 
   Plus, 
   Edit2, 
@@ -30,7 +30,6 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
   const [categoryName, setCategoryName] = useState('');
-  const [categoryAccountingGroupId, setCategoryAccountingGroupId] = useState('');
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -92,15 +91,28 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   }, [store?.id, isArabic, showNotification]);
 
   const accountingGroupLabel = (group) => {
+    if (!group) return isArabic ? 'يحتاج إعداد الضريبة' : 'Needs configuration';
+    let groupName = group.name;
+    if (isArabic) {
+      if (groupName === 'Food') groupName = 'طعام';
+      else if (groupName === 'Alcohol') groupName = 'كحوليات';
+      else if (groupName === 'Soft Drinks' || groupName === 'Non-Alcoholic Drinks') groupName = 'المشروبات غير الكحولية';
+      else if (groupName === 'Tax Exempt') groupName = 'معفى من الضريبة';
+    } else if (groupName === 'Soft Drinks') {
+      groupName = 'Non-Alcoholic Drinks';
+    }
+
     const profile = group.tax_profiles;
-    if (!profile) return `${group.name} — ${isArabic ? 'يحتاج إعداد ضريبة' : 'Tax setup required'}`;
+    if (!profile) return `${groupName} — ${isArabic ? 'يحتاج إعداد ضريبة' : 'Tax setup required'}`;
     const dineIn = profile.dine_in_tax_rate?.rate;
     const takeaway = profile.takeaway_tax_rate?.rate;
-    return `${group.name} — ${isArabic ? 'صالة' : 'Dine-in'} ${dineIn ?? '—'}% · ${isArabic ? 'سفري' : 'Takeaway'} ${takeaway ?? '—'}%`;
+    return `${groupName} — ${isArabic ? 'صالة' : 'Dine-in'} ${dineIn ?? '—'}% · ${isArabic ? 'سفري' : 'Takeaway'} ${takeaway ?? '—'}%`;
   };
+
+  const selectableAccountingGroups = accountingGroups.filter(g => g.name !== 'Other' && g.name !== 'Unassigned / Legacy');
   const selectedAccountingGroup = accountingGroups.find(group => group.id === productForm.accounting_group_id);
   const selectedAccountingProfile = selectedAccountingGroup?.tax_profiles;
-  const defaultGroupId = accountingGroups.find(g => g.is_default)?.id || '';
+  const defaultGroupId = selectableAccountingGroups.find(g => g.is_default)?.id || selectableAccountingGroups[0]?.id || '';
 
   useEffect(() => {
     if (store?.id) {
@@ -111,14 +123,14 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   // --- Category CRUD ---
   const handleSaveCategory = async (e) => {
     e.preventDefault();
-    if (!categoryName) return;
+    if (!categoryName?.trim()) return;
 
     try {
       if (editingCategory) {
         // Update
         const { error } = await supabase
           .from('categories')
-          .update({ name: categoryName, default_accounting_group_id: categoryAccountingGroupId || null })
+          .update({ name: categoryName.trim() })
           .eq('id', editingCategory.id);
         if (error) throw error;
         showNotification(isArabic ? "تم تحديث الفئة بنجاح" : "Category updated successfully");
@@ -126,13 +138,12 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
         // Create
         const { error } = await supabase
           .from('categories')
-          .insert({ name: categoryName, store_id: store.id, default_accounting_group_id: categoryAccountingGroupId || null });
+          .insert({ name: categoryName.trim(), store_id: store.id });
         if (error) throw error;
         showNotification(isArabic ? "تم إضافة الفئة بنجاح" : "Category added successfully");
       }
       setCategoryModalOpen(false);
       setCategoryName('');
-      setCategoryAccountingGroupId('');
       setEditingCategory(null);
       fetchCatalog();
     } catch (err) {
@@ -154,41 +165,29 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     }
   };
 
-  const handleApplyCategoryGroup = async (category) => {
-    if (!category.default_accounting_group_id) {
-      showNotification(isArabic ? 'اختر مجموعة ضريبية افتراضية للفئة أولاً.' : 'Choose a default accounting group first.', 'error');
-      return;
-    }
-    if (!confirm(isArabic ? 'سيتم تطبيق المجموعة على كل المنتجات التي لا تملك Override يدوي. متابعة؟' : 'Apply this group to all products without a manual override?')) return;
-    try {
-      const { data, error } = await supabase.rpc('apply_category_accounting_group_to_products', { p_category_id: category.id });
-      if (error) throw error;
-      showNotification(isArabic ? `تم تحديث ${data || 0} منتج.` : `Updated ${data || 0} products.`);
-      fetchCatalog();
-    } catch (err) {
-      console.error(err);
-      showNotification(isArabic ? 'تعذر تطبيق المجموعة على المنتجات.' : 'Unable to apply the group to products.', 'error');
-    }
-  };
-
   // --- Product CRUD ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     if (savingProduct) return;
 
-    const selectedCategory = categories.find(category => category.id === productForm.category_id);
-    const normalizedForm = {
-      ...productForm,
-      accounting_group_id: effectiveAccountingGroupId(productForm, selectedCategory, defaultGroupId)
-    };
-    if (!canSubmitProductForm(normalizedForm, savingProduct)) {
-      showNotification(isArabic ? 'اختر مجموعة محاسبية صالحة قبل حفظ المنتج.' : 'Choose a valid accounting group before saving the product.', 'error');
+    if (!productForm.category_id) {
+      showNotification(isArabic ? 'يرجى اختيار فئة صالحة للمنتج' : 'Please select a valid category for the product', 'error');
+      return;
+    }
+
+    if (!productForm.accounting_group_id) {
+      showNotification(isArabic ? 'يرجى اختيار مجموعة محاسبية صالحة للمنتج' : 'Please select a valid Accounting Group for the product', 'error');
+      return;
+    }
+
+    if (!canSubmitProductForm(productForm, savingProduct)) {
+      showNotification(isArabic ? 'يرجى إدخال جميع بيانات المنتج المطلوبة بصورة صحيحة.' : 'Please fill in all required product fields correctly.', 'error');
       return;
     }
 
     try {
       setSavingProduct(true);
-      const payload = buildProductPayload(normalizedForm, selectedCategory);
+      const payload = buildProductPayload(productForm);
 
       if (editingProduct) {
         const { error } = await supabase
@@ -206,7 +205,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       }
       setProductModalOpen(false);
       setEditingProduct(null);
-      setProductForm({ ...emptyProductForm, accounting_group_id: defaultGroupId });
+      setProductForm({ ...emptyProductForm, category_id: '', accounting_group_id: defaultGroupId || '' });
       await fetchCatalog();
     } catch (err) {
       console.error(err);
@@ -384,8 +383,8 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 <input value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder={isArabic ? 'ابحث بالاسم أو SKU أو السعر...' : 'Search by name, SKU or price...'} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-xs font-semibold focus:outline-none focus:border-amber-500" />
                 <div className="flex flex-wrap gap-2">
                   <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل الفئات' : 'All categories'}</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-                  <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل المجموعات الحسابية' : 'All accounting groups'}</option>{accountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select>
-                  {selectedProductIds.length > 0 && <div className="flex gap-2 rounded-lg bg-amber-50 border border-amber-200 p-1.5"><span className="px-2 py-1 text-xs font-black text-amber-800">{selectedProductIds.length} {isArabic ? 'محدد' : 'selected'}</span><select value={bulkGroupId} onChange={(e) => setBulkGroupId(e.target.value)} className="rounded-md border px-2 text-xs"><option value="">{isArabic ? 'تعيين مجموعة...' : 'Assign group...'}</option>{accountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select><button onClick={applyBulkGroup} disabled={!bulkGroupId} className="rounded-md bg-amber-500 px-3 text-xs font-bold text-white disabled:opacity-40">{isArabic ? 'تطبيق' : 'Apply'}</button></div>}
+                  <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل المجموعات الحسابية' : 'All accounting groups'}</option>{selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select>
+                  {selectedProductIds.length > 0 && <div className="flex gap-2 rounded-lg bg-amber-50 border border-amber-200 p-1.5"><span className="px-2 py-1 text-xs font-black text-amber-800">{selectedProductIds.length} {isArabic ? 'محدد' : 'selected'}</span><select value={bulkGroupId} onChange={(e) => setBulkGroupId(e.target.value)} className="rounded-md border px-2 text-xs"><option value="">{isArabic ? 'تعيين مجموعة...' : 'Assign group...'}</option>{selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select><button onClick={applyBulkGroup} disabled={!bulkGroupId} className="rounded-md bg-amber-500 px-3 text-xs font-bold text-white disabled:opacity-40">{isArabic ? 'تطبيق' : 'Apply'}</button></div>}
                 </div>
               </div>
 
@@ -404,13 +403,24 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                     {visibleProducts.map(product => {
                       const categoryName = categories.find(c => c.id === product.category_id)?.name || '-';
+                      const assignedGroup = accountingGroups.find(group => group.id === product.accounting_group_id);
+                      const needsConfig = !assignedGroup || assignedGroup.name === 'Other' || assignedGroup.name === 'Unassigned / Legacy';
+
                       return (
                         <tr key={product.id} className="hover:bg-slate-50/55 transition-all">
                           <td className="p-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProductSelection(product.id)} /></td>
                           <td className="p-4 font-bold text-slate-800">{product.name}</td>
                           <td className="p-4 text-slate-500">{categoryName}</td>
                           <td className="p-4 font-black">{parseFloat(product.price).toFixed(2)} €</td>
-                          <td className="p-4 text-slate-450 font-semibold">{product.accounting_group_id ? accountingGroupLabel(accountingGroups.find(group => group.id === product.accounting_group_id) || { name: isArabic ? 'غير معيّن' : 'Unassigned' }) : (isArabic ? 'غير معيّن / قديم' : 'Unassigned / Legacy')}</td>
+                          <td className="p-4">
+                            {needsConfig ? (
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
+                                {isArabic ? 'يحتاج إعداد الضريبة' : 'Needs configuration'}
+                              </span>
+                            ) : (
+                              <span className="text-slate-600 font-semibold">{accountingGroupLabel(assignedGroup)}</span>
+                            )}
+                          </td>
                           <td className="p-4">
                             <div className="flex justify-center gap-2.5">
                               <button
@@ -420,7 +430,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                     name: product.name,
                                     category_id: product.category_id || '',
                                     price: product.price,
-                                    accounting_group_id: product.accounting_group_id || '',
+                                    accounting_group_id: needsConfig ? '' : (product.accounting_group_id || ''),
                                     is_available: product.is_available ?? true
                                   });
                                   setProductModalOpen(true);
@@ -484,18 +494,9 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                         <td className="p-4">
                           <div className="flex justify-center gap-2.5">
                             <button
-                              onClick={() => handleApplyCategoryGroup(category)}
-                              disabled={!category.default_accounting_group_id}
-                              title={isArabic ? 'تطبيق على منتجات الفئة' : 'Apply to category products'}
-                              className="px-2 py-1 rounded-lg bg-amber-50 text-amber-700 text-[10px] font-bold disabled:opacity-35"
-                            >
-                              {isArabic ? 'تطبيق' : 'Apply'}
-                            </button>
-                            <button
                               onClick={() => {
                                 setEditingCategory(category);
                                 setCategoryName(category.name);
-                                setCategoryAccountingGroupId(category.default_accounting_group_id || '');
                                 setCategoryModalOpen(true);
                               }}
                               className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600 flex items-center justify-center transition-all"
@@ -616,14 +617,6 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     required
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? 'المجموعة الضريبية الافتراضية' : 'Default accounting group'}</label>
-                  <select value={categoryAccountingGroupId} onChange={(e) => setCategoryAccountingGroupId(e.target.value)} className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500">
-                    <option value="">{isArabic ? 'اختر مجموعة للمنتجات الجديدة' : 'Choose the group for new products'}</option>
-                    {accountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}
-                  </select>
-                  <p className="text-[10px] text-slate-500">{isArabic ? 'المنتجات الجديدة ترثها تلقائياً.' : 'New products inherit this automatically.'}</p>
-                </div>
               </div>
               <div className="p-5 border-t border-slate-100 bg-slate-50 flex gap-2">
                 <button
@@ -689,15 +682,11 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "الفئة" : "Category"}</label>
                     <select
                       value={productForm.category_id}
-                      onChange={(e) => {
-                        const categoryId = e.target.value;
-                        const category = categories.find(c => c.id === categoryId);
-                        setProductForm({ ...productForm, category_id: categoryId, accounting_group_id: category?.default_accounting_group_id || productForm.accounting_group_id || defaultGroupId });
-                      }}
+                      onChange={(e) => setProductForm({ ...productForm, category_id: e.target.value })}
                       className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
                       required
                     >
-                      <option value="">{isArabic ? "اختر فئة" : "Select Category"}</option>
+                      <option value="" disabled>{isArabic ? "اختر فئة" : "Choose category"}</option>
                       {categories.map(c => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
@@ -723,7 +712,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       required
                     >
                       <option value="">{isArabic ? '— اختر مجموعة محاسبية —' : '— Select an accounting group —'}</option>
-                      {accountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}
+                      {selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}
                     </select>
                     <button
                       type="button"
