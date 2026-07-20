@@ -75,8 +75,12 @@ export default function Login({ isArabic: propIsArabic, setIsArabic: propSetIsAr
         p_code_input: activationCode.trim()
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error('[POS Activation RPC Error]:', error);
+        throw error;
+      }
       if (!res?.success) {
+        console.error('[POS Activation Error Response]:', res);
         throw new Error(res?.error || (isArabic ? 'رمز تفعيل الجهاز غير صالح أو انتهت صلاحيته.' : 'Invalid or expired device activation code.'));
       }
 

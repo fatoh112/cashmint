@@ -819,7 +819,7 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                             </h4>
                           </div>
                           <p className="text-[9px] font-mono text-slate-500 dark:text-slate-400">
-                            {isArabic ? 'الكود' : 'Code'}: {device.activation_code}
+                            {device.activation_code ? `${isArabic ? 'الكود' : 'Code'}: ${device.activation_code}` : `ID: ${device.id.slice(0, 8)}`}
                             {activeSession && ` · ${isArabic ? 'الوردية' : 'Shift'}: ${activeSession.cashier_name}`}
                           </p>
                         </div>
