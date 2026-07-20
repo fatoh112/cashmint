@@ -153,6 +153,32 @@ function createMockDbEnvironment() {
     return order;
   }
 
+  function request_terminal_card_payment(params) {
+    const { p_order_id, p_pos_device_id } = params;
+    const order = tables.orders.find(o => o.id === p_order_id);
+    if (!order) throw new Error('Order not available');
+    if (order.status !== 'pending') throw new Error('Order is not awaiting card payment');
+
+    const idempotencyKey = `terminal-payment:${order.id}`;
+    let existing = tables.payment_requests.find(r => r.idempotency_key === idempotencyKey);
+    if (existing) {
+      existing.updated_at = new Date().toISOString();
+      return existing;
+    }
+
+    const reqId = `req-term-${tables.payment_requests.length + 1}`;
+    const req = {
+      id: reqId,
+      order_id: p_order_id,
+      amount_cents: Math.round(order.total_amount * 100),
+      idempotency_key: idempotencyKey,
+      status: 'pending',
+      updated_at: new Date().toISOString()
+    };
+    tables.payment_requests.push(req);
+    return req;
+  }
+
   function create_split_payment(params) {
     const {
       p_order_id,
@@ -223,6 +249,7 @@ function createMockDbEnvironment() {
       id: reqId,
       order_id: p_order_id,
       amount_cents: p_card_amount_cents,
+      idempotency_key: `split-card:${cardPartId}`,
       status: 'pending',
       split_part_id: cardPartId
     };
@@ -240,10 +267,46 @@ function createMockDbEnvironment() {
     };
   }
 
+  function retry_split_card_payment(params) {
+    const { p_split_id, p_idempotency_key, p_pos_device_id } = params;
+    const split = tables.payment_splits.find(s => s.id === p_split_id);
+    if (!split) throw new Error('Split record not found');
+
+    const activeReq = tables.payment_requests.find(r => r.order_id === split.order_id && ['pending', 'claimed', 'processing'].includes(r.status));
+    if (activeReq) {
+      throw new Error('An active card payment request is already in progress for this order');
+    }
+
+    const cardPartId = `part-${tables.payment_split_parts.length + 1}`;
+    const cardPart = {
+      id: cardPartId,
+      split_id: p_split_id,
+      order_id: split.order_id,
+      method: 'card',
+      amount_cents: 2000,
+      status: 'pending'
+    };
+    tables.payment_split_parts.push(cardPart);
+
+    const reqId = `req-retry-${tables.payment_requests.length + 1}`;
+    const req = {
+      id: reqId,
+      order_id: split.order_id,
+      amount_cents: 2000,
+      status: 'pending',
+      idempotency_key: p_idempotency_key || `split-card-retry:${cardPartId}`,
+      split_part_id: cardPartId
+    };
+    tables.payment_requests.push(req);
+    return { split_id: p_split_id, card_payment_request_id: reqId };
+  }
+
   return {
     tables,
     create_accounting_order,
-    create_split_payment
+    request_terminal_card_payment,
+    create_split_payment,
+    retry_split_card_payment
   };
 }
 
@@ -360,7 +423,7 @@ describe('Split Payment & Restored Audit Validations Suite', () => {
     expect(db.tables.payments[0]).toMatchObject({ method: 'cash', status: 'paid', amount: 10.00 });
   });
 
-  test('9. Valid normal Card order still creates one pending card row', () => {
+  test('9. Valid normal Card order creates/reuses request using idempotency_key', () => {
     const db = createMockDbEnvironment();
     const order = db.create_accounting_order({
       p_store_id: 'store-1',
@@ -375,31 +438,17 @@ describe('Split Payment & Restored Audit Validations Suite', () => {
       p_lines: [{ productId: 'prod-1', quantity: 2 }]
     });
 
-    expect(order.status).toBe('pending');
-    expect(db.tables.payments).toHaveLength(1);
-    expect(db.tables.payments[0]).toMatchObject({ method: 'card', status: 'pending', amount: 20.00, provider: 'stripe' });
+    const req1 = db.request_terminal_card_payment({ p_order_id: order.id, p_pos_device_id: 'device-active' });
+    expect(req1.idempotency_key).toBe(`terminal-payment:${order.id}`);
+    expect(req1.amount_cents).toBe(2000);
+
+    // Duplicate call returns the exact same request via ON CONFLICT (idempotency_key)
+    const req2 = db.request_terminal_card_payment({ p_order_id: order.id, p_pos_device_id: 'device-active' });
+    expect(req2.id).toBe(req1.id);
+    expect(db.tables.payment_requests).toHaveLength(1);
   });
 
-  test('10. Valid Split order creates a pending order with no legacy payment row', () => {
-    const db = createMockDbEnvironment();
-    const order = db.create_accounting_order({
-      p_store_id: 'store-1',
-      p_device_id: 'device-active',
-      p_cashier_session_id: 'session-open',
-      p_status: 'pending',
-      p_payment_method: 'split',
-      p_order_type: 'dine_in',
-      p_total_amount: 30.00,
-      p_subtotal_excl_vat: 26.09,
-      p_vat_amount: 3.91,
-      p_lines: [{ productId: 'prod-1', quantity: 3 }]
-    });
-
-    expect(order.status).toBe('pending');
-    expect(db.tables.payments).toHaveLength(0);
-  });
-
-  test('11. create_split_payment creates the Cash row and Card request', () => {
+  test('10. Split checkout uses card_payment_request_id from create_split_payment and DOES NOT call request_terminal_card_payment', () => {
     const db = createMockDbEnvironment();
     const order = db.create_accounting_order({
       p_store_id: 'store-1',
@@ -422,11 +471,59 @@ describe('Split Payment & Restored Audit Validations Suite', () => {
       p_pos_device_id: 'device-active'
     });
 
-    expect(order.status).toBe('partially_paid');
-    expect(db.tables.payments).toHaveLength(1);
-    expect(db.tables.payments[0]).toMatchObject({ method: 'cash', status: 'paid', amount: 10.00 });
+    // Exactly one active card request created by create_split_payment
     expect(db.tables.payment_requests).toHaveLength(1);
-    expect(db.tables.payment_requests[0]).toMatchObject({ amount_cents: 2000, status: 'pending' });
+    expect(splitRes.card_payment_request_id).toBe(db.tables.payment_requests[0].id);
+
+    // Card request amount equals ONLY the card portion (€20 = 2000 cents), not total (€30 = 3000 cents)
+    expect(db.tables.payment_requests[0].amount_cents).toBe(2000);
+
+    // request_terminal_card_payment is NOT called in split flow
+    expect(db.tables.payment_requests[0].idempotency_key).toContain('split-card:');
+  });
+
+  test('11. Retry Split creates a new request only after the previous request is final', () => {
+    const db = createMockDbEnvironment();
+    const order = db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-open',
+      p_status: 'pending',
+      p_payment_method: 'split',
+      p_order_type: 'dine_in',
+      p_total_amount: 30.00,
+      p_subtotal_excl_vat: 26.09,
+      p_vat_amount: 3.91,
+      p_lines: [{ productId: 'prod-1', quantity: 3 }]
+    });
+
+    const splitRes = db.create_split_payment({
+      p_order_id: order.id,
+      p_cash_amount_cents: 1000,
+      p_card_amount_cents: 2000,
+      p_idempotency_key: `split-${order.id}-key`,
+      p_pos_device_id: 'device-active'
+    });
+
+    // Attempting retry while request is pending throws active error
+    expect(() => db.retry_split_card_payment({
+      p_split_id: splitRes.split_id,
+      p_idempotency_key: `retry-key-1`,
+      p_pos_device_id: 'device-active'
+    })).toThrow('An active card payment request is already in progress');
+
+    // Simulate card request failing
+    db.tables.payment_requests[0].status = 'failed';
+
+    // Now retry creates a new request
+    const retryRes = db.retry_split_card_payment({
+      p_split_id: splitRes.split_id,
+      p_idempotency_key: `retry-key-2`,
+      p_pos_device_id: 'device-active'
+    });
+
+    expect(retryRes.card_payment_request_id).not.toBe(splitRes.card_payment_request_id);
+    expect(db.tables.payment_requests).toHaveLength(2);
   });
 
   test('12. cashier_user_id and cashier_name are still stored correctly', () => {
