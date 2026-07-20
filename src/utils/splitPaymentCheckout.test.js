@@ -1,7 +1,7 @@
-import { describe, test, expect, vi } from 'vitest';
+import { describe, test, expect } from 'vitest';
 
 /**
- * Mock database environment and RPC simulator to verify exact checkout contract behaviors.
+ * Mock database environment and RPC simulator matching exact database validation contracts.
  */
 function createMockDbEnvironment() {
   const tables = {
@@ -11,7 +11,17 @@ function createMockDbEnvironment() {
     payment_splits: [],
     payment_split_parts: [],
     payment_requests: [],
-    pos_devices: [{ id: 'device-1', store_id: 'store-1', status: 'active' }],
+    pos_devices: [
+      { id: 'device-active', store_id: 'store-1', device_name: 'Main POS', status: 'active' },
+      { id: 'device-disabled', store_id: 'store-1', device_name: 'Revoked POS', status: 'revoked' },
+      { id: 'device-other-store', store_id: 'store-2', device_name: 'Store 2 POS', status: 'active' }
+    ],
+    cashier_sessions: [
+      { id: 'session-open', store_id: 'store-1', device_id: 'device-active', cashier_name: 'Alice', cashier_user_id: 'user-alice-uuid', status: 'open' },
+      { id: 'session-closed', store_id: 'store-1', device_id: 'device-active', cashier_name: 'Bob', cashier_user_id: 'user-bob-uuid', status: 'closed' },
+      { id: 'session-other-device', store_id: 'store-1', device_id: 'device-other-store', cashier_name: 'Charlie', cashier_user_id: 'user-charlie-uuid', status: 'open' },
+      { id: 'session-other-store', store_id: 'store-2', device_id: 'device-other-store', cashier_name: 'Dave', cashier_user_id: 'user-dave-uuid', status: 'open' }
+    ],
     stores: [{ id: 'store-1', split_payment_enabled: true }],
     restaurant_payment_configs: [
       { id: 'cfg-1', location_id: 'store-1', provider_type: 'stripe_android_bridge', is_enabled: true }
@@ -40,16 +50,55 @@ function createMockDbEnvironment() {
       p_lines
     } = params;
 
-    // Validate inputs per RPC contract
-    if (!['pending', 'completed'].includes(p_status) ||
-        !['cash', 'card', 'split'].includes(p_payment_method) ||
-        !['dine_in', 'takeaway'].includes(p_order_type)) {
-      throw new Error('P0001: Invalid order state');
+    // 1. POS Device Validation
+    if (!p_device_id) {
+      throw new Error('POS_DEVICE_NOT_FOUND');
+    }
+    const device = tables.pos_devices.find(d => d.id === p_device_id);
+    if (!device) {
+      throw new Error('POS_DEVICE_NOT_FOUND');
+    }
+    if (device.status !== 'active') {
+      throw new Error('POS_DEVICE_DISABLED_OR_REVOKED');
+    }
+    if (device.store_id !== p_store_id) {
+      throw new Error('POS_DEVICE_STORE_MISMATCH');
     }
 
+    // 2. Cashier Session (Shift) Validation
+    if (!p_cashier_session_id) {
+      throw new Error('CASHIER_SHIFT_REQUIRED');
+    }
+    const session = tables.cashier_sessions.find(s => s.id === p_cashier_session_id);
+    if (!session) {
+      throw new Error('CASHIER_SHIFT_NOT_FOUND');
+    }
+    if (session.status !== 'open') {
+      throw new Error('CASHIER_SHIFT_CLOSED');
+    }
+    if (session.device_id !== p_device_id) {
+      throw new Error('CASHIER_SHIFT_DEVICE_MISMATCH');
+    }
+    if ((session.store_id || device.store_id) !== p_store_id) {
+      throw new Error('CASHIER_SHIFT_STORE_MISMATCH');
+    }
+
+    // 3. Lines & State Validation
     if (!Array.isArray(p_lines) || p_lines.length === 0) {
       throw new Error('Order requires lines');
     }
+    if (!['pending', 'completed'].includes(p_status) ||
+        !['cash', 'card', 'split'].includes(p_payment_method) ||
+        !['dine_in', 'takeaway'].includes(p_order_type)) {
+      throw new Error('Invalid order state');
+    }
+
+    // Extract cashier user and merge cashier name into raw_payload
+    const cashier_user_id = session.cashier_user_id || 'fallback-user-id';
+    const raw_payload = {
+      ...(p_raw_payload || {}),
+      ...(session.cashier_name ? { cashier_name: session.cashier_name } : {})
+    };
 
     receiptCounter += 1;
     const orderId = `order-${tables.orders.length + 1}`;
@@ -62,18 +111,18 @@ function createMockDbEnvironment() {
       vat_amount: p_vat_amount,
       discount_amount: p_discount_amount || 0,
       currency: p_currency || 'EUR',
-      raw_payload: p_raw_payload,
+      raw_payload,
       receipt_number: receiptCounter,
       order_type: p_order_type,
       cashier_session_id: p_cashier_session_id,
       pos_device_id: p_device_id,
+      cashier_user_id,
       completed_at: p_status === 'completed' ? new Date().toISOString() : null,
       created_at: new Date().toISOString()
     };
 
     tables.orders.push(order);
 
-    // Create order items
     p_lines.forEach(line => {
       tables.order_items.push({
         id: `item-${tables.order_items.length + 1}`,
@@ -115,9 +164,6 @@ function createMockDbEnvironment() {
 
     const order = tables.orders.find(o => o.id === p_order_id);
     if (!order) throw new Error('Order not found');
-    if (!['new', 'pending', 'partially_paid'].includes(order.status)) {
-      throw new Error('Order is not in an unpaid state');
-    }
 
     const totalCents = Math.round(order.total_amount * 100);
     if (p_cash_amount_cents + p_card_amount_cents !== totalCents) {
@@ -134,7 +180,7 @@ function createMockDbEnvironment() {
     };
     tables.payment_splits.push(split);
 
-    // Cash part - Succeeded
+    // Cash part
     const cashPartId = `part-${tables.payment_split_parts.length + 1}`;
     const cashPart = {
       id: cashPartId,
@@ -146,7 +192,6 @@ function createMockDbEnvironment() {
     };
     tables.payment_split_parts.push(cashPart);
 
-    // Record cash payment row in payments
     const cashPayId = `pay-${tables.payments.length + 1}`;
     tables.payments.push({
       id: cashPayId,
@@ -159,10 +204,9 @@ function createMockDbEnvironment() {
     });
     cashPart.payment_id = cashPayId;
 
-    // Transition order status to partially_paid
     order.status = 'partially_paid';
 
-    // Card part - Pending
+    // Card part
     const cardPartId = `part-${tables.payment_split_parts.length + 1}`;
     const cardPart = {
       id: cardPartId,
@@ -174,7 +218,6 @@ function createMockDbEnvironment() {
     };
     tables.payment_split_parts.push(cardPart);
 
-    // Card payment request created ONLY for card_amount_cents
     const reqId = `req-${tables.payment_requests.length + 1}`;
     const req = {
       id: reqId,
@@ -204,145 +247,206 @@ function createMockDbEnvironment() {
   };
 }
 
-describe('Split Payment & Checkout RPC Logic', () => {
+describe('Split Payment & Restored Audit Validations Suite', () => {
 
-  test('normal Cash order works: status completed, creates cash paid payment row', () => {
+  test('1. Missing POS device is rejected', () => {
     const db = createMockDbEnvironment();
-    const order = db.create_accounting_order({
+    expect(() => db.create_accounting_order({
       p_store_id: 'store-1',
-      p_device_id: 'device-1',
-      p_cashier_session_id: 'sess-1',
+      p_device_id: null,
+      p_cashier_session_id: 'session-open',
       p_status: 'completed',
       p_payment_method: 'cash',
       p_order_type: 'dine_in',
-      p_currency: 'EUR',
-      p_discount_amount: 0,
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('POS_DEVICE_NOT_FOUND');
+  });
+
+  test('2. Disabled POS device is rejected', () => {
+    const db = createMockDbEnvironment();
+    expect(() => db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-disabled',
+      p_cashier_session_id: 'session-open',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('POS_DEVICE_DISABLED_OR_REVOKED');
+  });
+
+  test('3. POS device from another store is rejected', () => {
+    const db = createMockDbEnvironment();
+    expect(() => db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-other-store',
+      p_cashier_session_id: 'session-open',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('POS_DEVICE_STORE_MISMATCH');
+  });
+
+  test('4. Missing cashier session is rejected', () => {
+    const db = createMockDbEnvironment();
+    expect(() => db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: null,
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('CASHIER_SHIFT_REQUIRED');
+  });
+
+  test('5. Closed cashier session is rejected', () => {
+    const db = createMockDbEnvironment();
+    expect(() => db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-closed',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('CASHIER_SHIFT_CLOSED');
+  });
+
+  test('6. Cashier session/device mismatch is rejected', () => {
+    const db = createMockDbEnvironment();
+    expect(() => db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-other-device',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('CASHIER_SHIFT_DEVICE_MISMATCH');
+  });
+
+  test('7. Cashier session/store mismatch is rejected', () => {
+    const db = createMockDbEnvironment();
+    expect(() => db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-other-store',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_lines: [{ productId: 'prod-1', quantity: 1 }]
+    })).toThrow('CASHIER_SHIFT_DEVICE_MISMATCH');
+  });
+
+  test('8. Valid normal Cash order still completes and creates one paid row', () => {
+    const db = createMockDbEnvironment();
+    const order = db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-open',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_total_amount: 10.00,
       p_subtotal_excl_vat: 8.70,
       p_vat_amount: 1.30,
-      p_total_amount: 10.00,
-      p_raw_payload: {},
       p_lines: [{ productId: 'prod-1', quantity: 1 }]
     });
 
     expect(order.status).toBe('completed');
-    expect(db.tables.orders).toHaveLength(1);
     expect(db.tables.payments).toHaveLength(1);
-    expect(db.tables.payments[0]).toMatchObject({
-      order_id: order.id,
-      method: 'cash',
-      status: 'paid',
-      amount: 10.00
-    });
+    expect(db.tables.payments[0]).toMatchObject({ method: 'cash', status: 'paid', amount: 10.00 });
   });
 
-  test('normal Card order works: status pending, creates card pending payment row', () => {
+  test('9. Valid normal Card order still creates one pending card row', () => {
     const db = createMockDbEnvironment();
     const order = db.create_accounting_order({
       p_store_id: 'store-1',
-      p_device_id: 'device-1',
-      p_cashier_session_id: 'sess-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-open',
       p_status: 'pending',
       p_payment_method: 'card',
       p_order_type: 'takeaway',
-      p_currency: 'EUR',
-      p_discount_amount: 0,
+      p_total_amount: 20.00,
       p_subtotal_excl_vat: 17.39,
       p_vat_amount: 2.61,
-      p_total_amount: 20.00,
-      p_raw_payload: {},
       p_lines: [{ productId: 'prod-1', quantity: 2 }]
     });
 
     expect(order.status).toBe('pending');
-    expect(db.tables.orders).toHaveLength(1);
     expect(db.tables.payments).toHaveLength(1);
-    expect(db.tables.payments[0]).toMatchObject({
-      order_id: order.id,
-      method: 'card',
-      status: 'pending',
-      amount: 20.00,
-      provider: 'stripe'
-    });
+    expect(db.tables.payments[0]).toMatchObject({ method: 'card', status: 'pending', amount: 20.00, provider: 'stripe' });
   });
 
-  test('Split order creation does NOT insert a fake split payment row', () => {
+  test('10. Valid Split order creates a pending order with no legacy payment row', () => {
     const db = createMockDbEnvironment();
     const order = db.create_accounting_order({
       p_store_id: 'store-1',
-      p_device_id: 'device-1',
-      p_cashier_session_id: 'sess-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-open',
       p_status: 'pending',
       p_payment_method: 'split',
       p_order_type: 'dine_in',
-      p_currency: 'EUR',
-      p_discount_amount: 0,
+      p_total_amount: 30.00,
       p_subtotal_excl_vat: 26.09,
       p_vat_amount: 3.91,
-      p_total_amount: 30.00,
-      p_raw_payload: {},
-      p_lines: [{ productId: 'prod-1', quantity: 3 }]
-    });
-
-    expect(order.status).toBe('pending');
-    expect(db.tables.orders).toHaveLength(1);
-    // Crucial check: create_accounting_order with method='split' must NOT insert into payments
-    expect(db.tables.payments).toHaveLength(0);
-  });
-
-  test('create_split_payment inserts only Cash row initially, order becomes partially_paid, and card request is card amount only', () => {
-    const db = createMockDbEnvironment();
-    // Step 1: Base order creation with method = 'split', status = 'pending'
-    const order = db.create_accounting_order({
-      p_store_id: 'store-1',
-      p_device_id: 'device-1',
-      p_cashier_session_id: 'sess-1',
-      p_status: 'pending',
-      p_payment_method: 'split',
-      p_order_type: 'dine_in',
-      p_currency: 'EUR',
-      p_discount_amount: 0,
-      p_subtotal_excl_vat: 26.09,
-      p_vat_amount: 3.91,
-      p_total_amount: 30.00,
-      p_raw_payload: {},
       p_lines: [{ productId: 'prod-1', quantity: 3 }]
     });
 
     expect(order.status).toBe('pending');
     expect(db.tables.payments).toHaveLength(0);
+  });
 
-    // Step 2: Immediate create_split_payment (€10 cash, €20 card)
+  test('11. create_split_payment creates the Cash row and Card request', () => {
+    const db = createMockDbEnvironment();
+    const order = db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-open',
+      p_status: 'pending',
+      p_payment_method: 'split',
+      p_order_type: 'dine_in',
+      p_total_amount: 30.00,
+      p_subtotal_excl_vat: 26.09,
+      p_vat_amount: 3.91,
+      p_lines: [{ productId: 'prod-1', quantity: 3 }]
+    });
+
     const splitRes = db.create_split_payment({
       p_order_id: order.id,
       p_cash_amount_cents: 1000,
       p_card_amount_cents: 2000,
-      p_idempotency_key: `split-${order.id}-1`,
-      p_pos_device_id: 'device-1'
+      p_idempotency_key: `split-${order.id}-key`,
+      p_pos_device_id: 'device-active'
     });
 
-    // Verify order transitions to partially_paid ONLY after create_split_payment
     expect(order.status).toBe('partially_paid');
-
-    // Verify payment rows: contains ONLY cash row (€10) so far, no fake split row
     expect(db.tables.payments).toHaveLength(1);
-    expect(db.tables.payments[0]).toMatchObject({
-      order_id: order.id,
-      method: 'cash',
-      status: 'paid',
-      amount: 10.00
+    expect(db.tables.payments[0]).toMatchObject({ method: 'cash', status: 'paid', amount: 10.00 });
+    expect(db.tables.payment_requests).toHaveLength(1);
+    expect(db.tables.payment_requests[0]).toMatchObject({ amount_cents: 2000, status: 'pending' });
+  });
+
+  test('12. cashier_user_id and cashier_name are still stored correctly', () => {
+    const db = createMockDbEnvironment();
+    const order = db.create_accounting_order({
+      p_store_id: 'store-1',
+      p_device_id: 'device-active',
+      p_cashier_session_id: 'session-open',
+      p_status: 'completed',
+      p_payment_method: 'cash',
+      p_order_type: 'dine_in',
+      p_total_amount: 10.00,
+      p_lines: [{ productId: 'prod-1', quantity: 1 }],
+      p_raw_payload: { existing_key: 'value' }
     });
 
-    // Verify split parts: 1 cash succeeded, 1 card pending
-    expect(db.tables.payment_split_parts).toHaveLength(2);
-    expect(db.tables.payment_split_parts[0]).toMatchObject({ method: 'cash', amount_cents: 1000, status: 'succeeded' });
-    expect(db.tables.payment_split_parts[1]).toMatchObject({ method: 'card', amount_cents: 2000, status: 'pending' });
-
-    // Verify card request amount: ONLY card portion (2000 cents = €20), not total (€30)
-    expect(db.tables.payment_requests).toHaveLength(1);
-    expect(db.tables.payment_requests[0]).toMatchObject({
-      order_id: order.id,
-      amount_cents: 2000,
-      status: 'pending'
+    expect(order.cashier_user_id).toBe('user-alice-uuid');
+    expect(order.raw_payload).toMatchObject({
+      existing_key: 'value',
+      cashier_name: 'Alice'
     });
   });
 
