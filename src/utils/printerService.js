@@ -110,7 +110,13 @@ export function buildReceiptXML(order, storeName) {
   const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? (subtotal - vatAmount));
 
   // Payment Label/Method if present
-  if (order.raw_payload?.payment_label) {
+  if (order.raw_payload?.payment_splits) {
+    xml += `<text align="left">طريقة الدفع / Payment: دفع مجزأ / Split Payment&#10;</text>`;
+    xml += `<text align="left">${escapeXML(formatLine('  نقداً / Cash:', `${parseFloat(order.raw_payload.payment_splits.cash_amount || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
+    xml += `<text align="left">${escapeXML(formatLine('  بطاقة / Card:', `${parseFloat(order.raw_payload.payment_splits.card_amount || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
+    xml += `<text align="left">${escapeXML(formatLine('  إجمالي المدفوع / Total Paid:', `${subtotal.toFixed(2)} EUR`, width))}&#10;</text>`;
+    xml += `<text align="left">${separator}&#10;</text>`;
+  } else if (order.raw_payload?.payment_label) {
     const escapedPaymentLabel = escapeXML(order.raw_payload.payment_label);
     xml += `<text align="left">طريقة الدفع / Payment: ${escapedPaymentLabel}&#10;</text>`;
     xml += `<text align="left">${separator}&#10;</text>`;
@@ -276,8 +282,36 @@ export function printViaIframeFallback(order, storeName = 'Cashmint') {
         }
       });
 
+      let paymentHtml = '';
+      if (order.raw_payload?.payment_splits) {
+        paymentHtml = `
+  <div class="item-row" style="font-weight: bold;">
+    <span>طريقة الدفع / Payment:</span>
+    <span>دفع مجزأ / Split Payment</span>
+  </div>
+  <div class="item-row" style="font-size: 11px;">
+    <span>  - نقداً / Cash:</span>
+    <span>${parseFloat(order.raw_payload.payment_splits.cash_amount || 0).toFixed(2)} EUR</span>
+  </div>
+  <div class="item-row" style="font-size: 11px;">
+    <span>  - بطاقة / Card:</span>
+    <span>${parseFloat(order.raw_payload.payment_splits.card_amount || 0).toFixed(2)} EUR</span>
+  </div>
+  <div class="divider"></div>
+`;
+      } else if (order.raw_payload?.payment_label) {
+        paymentHtml = `
+  <div class="item-row">
+    <span>طريقة الدفع / Payment:</span>
+    <span>${order.raw_payload.payment_label}</span>
+  </div>
+  <div class="divider"></div>
+`;
+      }
+
       html += `
   <div class="divider"></div>
+  ${paymentHtml}
   <div class="item-row">
     <span>المجموع الفرعي / Subtotal:</span>
     <span>${subtotalWithoutVat.toFixed(2)} EUR</span>

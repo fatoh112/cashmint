@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
     const finalStatus = ['succeeded', 'failed', 'cancelled', 'expired'].includes(request.status)
     if (verified.status === 'succeeded') {
       await db.from('payment_requests').update({ status: 'succeeded', failure_code: null, failure_message: null, finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id)
-      const { error } = await db.rpc('complete_accounting_card_payment', { p_order_id: request.order_id, p_provider_reference: verified.id, p_processor_fee: 0 })
+      const { error } = await db.rpc('finalize_split_card_payment', { p_payment_request_id: request.id, p_provider_reference: verified.id })
       if (error) throw error
     } else if (['cancel_requested', 'cancelled'].includes(request.status)) {
       await db.from('payment_requests').update({ status: 'cancelled', failure_code: verified.last_payment_error?.code ?? null, failure_message: verified.last_payment_error?.message ?? 'Payment cancelled.', finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')

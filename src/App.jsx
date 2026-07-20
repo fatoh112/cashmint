@@ -4,6 +4,7 @@ import { supabase } from './supabaseClient';
 import Login from './Login';
 import { printReceipt } from './utils/printerService';
 import { calculateOrderAccounting } from './utils/taxCalculator';
+import { validateSplitAmounts, calculateFiftyFiftySplit, toCents, fromCents } from './utils/splitPaymentUtils';
 import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
 
@@ -533,6 +534,30 @@ export default function App() {
   const checkoutInFlightRef = useRef(false);
   const autoPrintJobsRef = useRef(new Map());
   const autoPrintQueueRef = useRef(Promise.resolve());
+
+  // Split Payment states
+  const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splitCashInput, setSplitCashInput] = useState('');
+  const [splitCardInput, setSplitCardInput] = useState('');
+  const [splitInputMode, setSplitInputMode] = useState('cash');
+  const [activeSplit, setActiveSplit] = useState(null);
+  const [isSubmittingSplit, setIsSubmittingSplit] = useState(false);
+  const [confirmCashReturnedModal, setConfirmCashReturnedModal] = useState(false);
+
+  const markOrderReceiptPrinted = (orderId) => {
+    if (!orderId) return false;
+    try {
+      const raw = localStorage.getItem('printed_receipt_orders') || '[]';
+      const list = JSON.parse(raw);
+      if (list.includes(orderId)) return false;
+      list.push(orderId);
+      if (list.length > 200) list.shift();
+      localStorage.setItem('printed_receipt_orders', JSON.stringify(list));
+      return true;
+    } catch (e) {
+      return true;
+    }
+  };
   useEffect(() => {
     activePaymentOrderIdRef.current = activePaymentOrderId;
   }, [activePaymentOrderId]);
@@ -551,6 +576,9 @@ export default function App() {
         const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
         if (!localPrinterIP || !autoPrint) {
           return { success: false, skipped: true };
+        }
+        if (!markOrderReceiptPrinted(order.id)) {
+          return { success: true, skipped: true, alreadyPrinted: true };
         }
 
         let res = { success: false, error: 'Print job did not run' };
@@ -1783,6 +1811,167 @@ export default function App() {
     }
   };
 
+  // Split Payment Action Handlers
+  const handleConfirmSplitPayment = async () => {
+    if (cart.length === 0) return;
+    if (taxConfigurationError) {
+      showNotification(taxConfigurationError.message, 'error');
+      return;
+    }
+    const val = validateSplitAmounts(totalAmount, splitCashInput, splitCardInput, isArabic);
+    if (!val.valid) {
+      showNotification(val.error, 'error');
+      return;
+    }
+    if (checkoutInFlightRef.current) return;
+    checkoutInFlightRef.current = true;
+    setIsSubmittingSplit(true);
+
+    try {
+      showNotification(isArabic ? "جاري إنشاء وتجهيز الدفع المجزأ..." : "Creating split payment...", "info");
+
+      const activeStoreId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
+      const activeSessionId = activeCashierSession?.id || localStorage.getItem('cashier_session_id');
+
+      const rawPayload = {
+        order_type: orderType,
+        coupon_code: appliedCoupon ? appliedCoupon.code : null,
+        discount_amount: accounting.totals.discount,
+        cashier_session_id: activeSessionId,
+        payment_splits: {
+          cash_amount: val.cashCents / 100.0,
+          card_amount: val.cardCents / 100.0,
+          total_paid: totalAmount
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      // 1. Create order in pending state
+      const { data: orderData, error: orderErr } = await supabase.rpc('create_accounting_order', {
+        p_store_id: activeStoreId,
+        p_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id'),
+        p_cashier_session_id: activeSessionId,
+        p_status: 'pending',
+        p_payment_method: 'split',
+        p_order_type: orderType,
+        p_currency: store?.currency || 'EUR',
+        p_discount_amount: accounting.totals.discount,
+        p_subtotal_excl_vat: accounting.totals.net,
+        p_vat_amount: accounting.totals.vat,
+        p_total_amount: accounting.totals.gross,
+        p_raw_payload: rawPayload,
+        p_lines: accounting.lines
+      });
+      if (orderErr) throw orderErr;
+      const createdOrder = Array.isArray(orderData) ? orderData[0] : orderData;
+      if (!createdOrder?.id) throw new Error('The order was not returned by checkout.');
+
+      // 2. Call create_split_payment RPC
+      const idempotencyKey = `split-${createdOrder.id}-${Date.now()}`;
+      const { data: splitData, error: splitErr } = await supabase.rpc('create_split_payment', {
+        p_order_id: createdOrder.id,
+        p_cash_amount_cents: val.cashCents,
+        p_card_amount_cents: val.cardCents,
+        p_idempotency_key: idempotencyKey,
+        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+      });
+      if (splitErr) throw splitErr;
+
+      const splitResult = Array.isArray(splitData) ? splitData[0] : splitData;
+
+      activePaymentOrderRef.current = createdOrder;
+      setActivePaymentOrderId(createdOrder.id);
+      setActivePaymentRequestId(splitResult.card_payment_request_id);
+      setActiveSplit({
+        split_id: splitResult.split_id,
+        order_id: createdOrder.id,
+        cash_amount_cents: val.cashCents,
+        card_amount_cents: val.cardCents,
+        status: splitResult.status
+      });
+
+      setShowSplitModal(false);
+      setShowStripeModal(true);
+      setStripeStatus('pending');
+
+    } catch (err) {
+      console.error("SPLIT CHECKOUT ERROR:", err);
+      showNotification(err.message || "Split payment creation failed", "error");
+    } finally {
+      checkoutInFlightRef.current = false;
+      setIsSubmittingSplit(false);
+    }
+  };
+
+  const handleRetryCardPayment = async () => {
+    if (!activeSplit?.split_id) return;
+    try {
+      showNotification(isArabic ? "جاري إرسال طلب جديد للبطاقة..." : "Retrying card payment...", "info");
+      const { data, error } = await supabase.rpc('retry_split_card_payment', {
+        p_split_id: activeSplit.split_id,
+        p_idempotency_key: `retry-${activeSplit.split_id}-${Date.now()}`,
+        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+      });
+      if (error) throw error;
+      const res = Array.isArray(data) ? data[0] : data;
+      setActivePaymentRequestId(res.card_payment_request_id);
+      setShowStripeModal(true);
+      setStripeStatus('pending');
+    } catch (err) {
+      showNotification(err.message || 'Retry card payment failed', 'error');
+    }
+  };
+
+  const handlePayRemainingInCash = async () => {
+    if (!activeSplit?.split_id) return;
+    try {
+      showNotification(isArabic ? "جاري تسجيل دفع المتبقي نقداً..." : "Paying remaining amount in cash...", "info");
+      const { data, error } = await supabase.rpc('pay_remaining_split_in_cash', {
+        p_split_id: activeSplit.split_id,
+        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+      });
+      if (error) throw error;
+
+      const orderToPrint = activePaymentOrderRef.current;
+      if (orderToPrint) {
+        enqueueAutoReceiptPrint({ ...orderToPrint, status: 'completed' });
+      }
+
+      if (orderCompleteSoundEnabled) playChime();
+      setCart([]);
+      setActiveSplit(null);
+      setActivePaymentOrderId(null);
+      setActivePaymentRequestId(null);
+      activePaymentOrderRef.current = null;
+      setShowStripeModal(false);
+      showNotification(isArabic ? "تم استلام المتبقي نقداً بنجاح! 🚀" : "Remaining amount paid in cash! 🚀");
+    } catch (err) {
+      showNotification(err.message || 'Pay remaining in cash failed', 'error');
+    }
+  };
+
+  const handleCancelSplitConfirmed = async () => {
+    if (!activeSplit?.split_id) return;
+    try {
+      const { error } = await supabase.rpc('cancel_split_payment', {
+        p_split_id: activeSplit.split_id,
+        p_confirm_cash_returned: true,
+        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+      });
+      if (error) throw error;
+
+      setConfirmCashReturnedModal(false);
+      setActiveSplit(null);
+      setActivePaymentOrderId(null);
+      setActivePaymentRequestId(null);
+      activePaymentOrderRef.current = null;
+      setShowStripeModal(false);
+      showNotification(isArabic ? "تم إلغاء الدفع المجزأ وإرجاع النقد للزبون." : "Split payment cancelled & cash returned.", "info");
+    } catch (err) {
+      showNotification(err.message || 'Cancel split failed', 'error');
+    }
+  };
+
   // Revoke device access (clear all states and localStorage)
   const handleRevokeLogout = () => {
     localStorage.removeItem('device_id');
@@ -2987,6 +3176,24 @@ export default function App() {
               >
                 {t('dine_in') === 'صالة' ? 'بطاقة / فيزا' : 'Card / Visa'}
               </button>
+              {store?.split_payment_enabled && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentMethod('split');
+                    const fifty = calculateFiftyFiftySplit(totalAmount);
+                    setSplitCashInput(fifty.cashAmount);
+                    setSplitCardInput(fifty.cardAmount);
+                    setShowSplitModal(true);
+                  }}
+                  className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all ${paymentMethod === 'split'
+                    ? 'bg-amber-500 text-white shadow-sm'
+                    : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'
+                    }`}
+                >
+                  {isArabic ? 'دفع مجزأ' : 'Split Payment'}
+                </button>
+              )}
             </div>
 
             {/* Primary Checkout Button */}
@@ -3561,6 +3768,236 @@ export default function App() {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Split Payment Setup Modal */}
+      {showSplitModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" dir={isArabic ? "rtl" : "ltr"}>
+          <div className="bg-white dark:bg-slate-800 rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-700 flex flex-col p-6 space-y-5">
+            <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-700 pb-3">
+              <h3 className="font-extrabold text-lg text-slate-800 dark:text-white flex items-center gap-2">
+                <span>💳💵</span>
+                <span>{isArabic ? "دفع مجزأ (نقد + بطاقة)" : "Split Payment (Cash + Card)"}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowSplitModal(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Order Total Display */}
+            <div className="bg-slate-50 dark:bg-slate-900/60 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 flex justify-between items-center">
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{isArabic ? "إجمالي الطلب:" : "Order Total:"}</span>
+              <span className="text-xl font-black text-amber-500">{totalAmount.toFixed(2)} €</span>
+            </div>
+
+            {/* Split Inputs */}
+            <div className="space-y-4">
+              {/* Cash Part Input */}
+              <div className="space-y-1 text-right">
+                <div className="flex justify-between text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <span>{isArabic ? "المبلغ نقداً (Cash):" : "Cash Portion:"}</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={splitCashInput}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSplitCashInput(val);
+                      const cashCents = toCents(val);
+                      const totalCents = toCents(totalAmount);
+                      const cardCents = Math.max(0, totalCents - cashCents);
+                      setSplitCardInput(fromCents(cardCents));
+                    }}
+                    placeholder="0.00"
+                    dir="ltr"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-black text-slate-800 dark:text-slate-100 focus:outline-none focus:border-amber-500 text-left"
+                  />
+                </div>
+              </div>
+
+              {/* Card Part Input */}
+              <div className="space-y-1 text-right">
+                <div className="flex justify-between text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <span>{isArabic ? "المبلغ بالبطاقة (Card):" : "Card Portion:"}</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={splitCardInput}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSplitCardInput(val);
+                      const cardCents = toCents(val);
+                      const totalCents = toCents(totalAmount);
+                      const cashCents = Math.max(0, totalCents - cardCents);
+                      setSplitCashInput(fromCents(cashCents));
+                    }}
+                    placeholder="0.00"
+                    dir="ltr"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-black text-slate-800 dark:text-slate-100 focus:outline-none focus:border-amber-500 text-left"
+                  />
+                </div>
+              </div>
+
+              {/* Quick Action: 50 / 50 */}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const fifty = calculateFiftyFiftySplit(totalAmount);
+                    setSplitCashInput(fifty.cashAmount);
+                    setSplitCardInput(fifty.cardAmount);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 text-xs font-bold hover:bg-amber-100 transition-all cursor-pointer"
+                >
+                  {isArabic ? "تقسيم بالتساوي 50 / 50" : "Split 50 / 50"}
+                </button>
+              </div>
+
+              {/* Validation Message */}
+              {(() => {
+                const val = validateSplitAmounts(totalAmount, splitCashInput, splitCardInput, isArabic);
+                if (!val.valid) {
+                  return (
+                    <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-xs font-bold text-amber-700 dark:text-amber-300 text-center">
+                      {val.error}
+                    </div>
+                  );
+                }
+                return (
+                  <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs font-bold text-emerald-700 dark:text-emerald-300 text-center">
+                    {isArabic ? "المبالغ متطابقة وجاهزة للتأكيد ✓" : "Amounts match order total exactly ✓"}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-700 flex gap-3">
+              <button
+                type="button"
+                disabled={isSubmittingSplit || !validateSplitAmounts(totalAmount, splitCashInput, splitCardInput, isArabic).valid}
+                onClick={handleConfirmSplitPayment}
+                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-extrabold text-xs rounded-xl transition-all shadow-md active:scale-[0.99] flex justify-center items-center gap-2 cursor-pointer"
+              >
+                {isSubmittingSplit ? (
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  isArabic ? "تأكيد الدفع المجزأ" : "Confirm Split Payment"
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSplitModal(false)}
+                className="px-4 py-3 rounded-xl font-extrabold text-xs border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-700 text-slate-800 dark:text-slate-200 hover:bg-slate-200 cursor-pointer"
+              >
+                {isArabic ? "إلغاء" : "Cancel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Card Failure & Split Recovery Modal */}
+      {activeSplit && activeSplit.status !== 'succeeded' && activeSplit.status !== 'cancelled' && stripeStatus === 'failed' && (
+        <div className="fixed inset-0 bg-black/60 z-55 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" dir={isArabic ? "rtl" : "ltr"}>
+          <div className="bg-white dark:bg-slate-800 rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-700 flex flex-col p-6 space-y-5">
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 rounded-full bg-rose-100 dark:bg-rose-950/50 text-rose-500 flex items-center justify-center mx-auto text-xl font-bold">
+                ⚠️
+              </div>
+              <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
+                {isArabic ? "فشل دفع البطاقة" : "Card Payment Failed"}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {isArabic ? "تم استلام المبلغ النقدي بنجاح. البطاقة لم تكتمل." : "Cash portion confirmed. Card payment could not be processed."}
+              </p>
+            </div>
+
+            <div className="bg-slate-50 dark:bg-slate-900/60 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-2 text-xs">
+              <div className="flex justify-between font-bold text-emerald-600 dark:text-emerald-400">
+                <span>{isArabic ? "النقدي المستلم:" : "Cash received:"}</span>
+                <span>{fromCents(activeSplit.cash_amount_cents || 0)} €</span>
+              </div>
+              <div className="flex justify-between font-bold text-rose-500">
+                <span>{isArabic ? "البطاقة الفاشلة:" : "Card failed:"}</span>
+                <span>{fromCents(activeSplit.card_amount_cents || 0)} €</span>
+              </div>
+              <div className="flex justify-between font-black text-amber-500 border-t border-slate-200 dark:border-slate-700 pt-2 text-sm">
+                <span>{isArabic ? "المبلغ المتبقي:" : "Remaining amount:"}</span>
+                <span>{fromCents(activeSplit.card_amount_cents || 0)} €</span>
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={handleRetryCardPayment}
+                className="w-full py-3 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all cursor-pointer"
+              >
+                {isArabic ? "إعادة محاولة البطاقة" : "Retry Card Payment"}
+              </button>
+
+              <button
+                type="button"
+                onClick={handlePayRemainingInCash}
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-sm transition-all cursor-pointer"
+              >
+                {isArabic ? "دفع المتبقي نقداً" : "Pay Remaining in Cash"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setConfirmCashReturnedModal(true)}
+                className="w-full py-2.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 text-slate-700 dark:text-slate-200 font-extrabold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                {isArabic ? "إلغاء الدفع المجزأ" : "Cancel Split"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Cash Returned Modal */}
+      {confirmCashReturnedModal && (
+        <div className="fixed inset-0 bg-black/60 z-60 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" dir={isArabic ? "rtl" : "ltr"}>
+          <div className="bg-white dark:bg-slate-800 rounded-3xl max-w-sm w-full shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-700 flex flex-col p-6 space-y-4">
+            <h3 className="font-extrabold text-base text-slate-800 dark:text-white text-center">
+              {isArabic ? "تأكيد إعادة النقد للزبون" : "Confirm Cash Returned"}
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+              {isArabic
+                ? `تم تحصيل ${fromCents(activeSplit?.cash_amount_cents || 0)} € نقداً. تأكد من إرجاع المبلغ للزبون قبل إلغاء العملية.`
+                : `€${fromCents(activeSplit?.cash_amount_cents || 0)} was received in cash. Confirm cash was returned to customer before cancelling.`}
+            </p>
+
+            <div className="pt-3 flex gap-3">
+              <button
+                type="button"
+                onClick={handleCancelSplitConfirmed}
+                className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs rounded-xl transition-all shadow-sm cursor-pointer"
+              >
+                {isArabic ? "تم إرجاع النقد وإلغاء الطلب" : "Cash Returned & Cancel"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmCashReturnedModal(false)}
+                className="px-4 py-3 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-extrabold text-xs rounded-xl cursor-pointer"
+              >
+                {isArabic ? "تراجع" : "Go Back"}
+              </button>
+            </div>
           </div>
         </div>
       )}
