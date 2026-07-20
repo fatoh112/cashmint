@@ -23,6 +23,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   const [itemSearch, setItemSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
+  const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [bulkGroupId, setBulkGroupId] = useState('');
   const [bulkCategoryId, setBulkCategoryId] = useState('');
 
