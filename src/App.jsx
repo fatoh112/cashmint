@@ -70,7 +70,10 @@ import {
   CreditCard,
   KeyRound,
   Shield,
-  Pencil
+  Pencil,
+  Printer,
+  UserCheck,
+  RefreshCw
 } from 'lucide-react';
 
 const DEFAULT_PIN = import.meta.env.VITE_ADMIN_PIN || "1234";
@@ -395,6 +398,35 @@ export default function App() {
   const [autoPrintEnabled, setAutoPrintEnabled] = useState(() => {
     return localStorage.getItem('auto_print_enabled') !== 'false';
   });
+  const [autoPrintCashier, setAutoPrintCashier] = useState(() => localStorage.getItem('auto_print_cashier') !== 'false');
+  const [autoPrintCustomer, setAutoPrintCustomer] = useState(() => localStorage.getItem('auto_print_customer') === 'true');
+  const [autoPrintKitchen, setAutoPrintKitchen] = useState(() => localStorage.getItem('auto_print_kitchen') !== 'false');
+
+  const [notification, setNotification] = useState(null);
+  const showNotification = useCallback((message, type = 'success') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 3000);
+  }, []);
+
+  const [isArabic, setIsArabic] = useState(() => {
+    const saved = localStorage.getItem('app_language');
+    if (saved) return saved === 'ar';
+    return true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('app_language', isArabic ? 'ar' : 'en');
+  }, [isArabic]);
+
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === 'app_language') {
+        setIsArabic(e.newValue === 'ar');
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
   const [beepEnabled, setBeepEnabled] = useState(() => {
     return localStorage.getItem('beep_enabled') === 'true';
   });
@@ -445,26 +477,6 @@ export default function App() {
   const [hubriseLocationId, setHubriseLocationId] = useState('');
   const [view, setView] = useState('pos'); // 'pos' or 'admin'
   const [userRole, setUserRole] = useState('cashier'); // 'cashier' or 'admin'
-
-  const [isArabic, setIsArabic] = useState(() => {
-    const saved = localStorage.getItem('app_language');
-    if (saved) return saved === 'ar';
-    return true;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('app_language', isArabic ? 'ar' : 'en');
-  }, [isArabic]);
-
-  useEffect(() => {
-    const handleStorageChange = (e) => {
-      if (e.key === 'app_language') {
-        setIsArabic(e.newValue === 'ar');
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
 
   const t = (key) => {
     if (!key) return '';
@@ -547,26 +559,80 @@ export default function App() {
     const job = autoPrintQueueRef.current
       .catch(() => { })
       .then(async () => {
-        const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
+        const autoPrintMaster = localStorage.getItem('auto_print_enabled') !== 'false';
         const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
-        if (!localPrinterIP || !autoPrint) {
+        if (!localPrinterIP || !autoPrintMaster) {
           return { success: false, skipped: true };
         }
 
-        let res = { success: false, error: 'Print job did not run' };
-        for (let attempt = 1; attempt <= 3; attempt += 1) {
-          res = await printReceipt(order, localPrinterIP, store ? store.name : 'Cashmint', { skipFallback: true, isArabic });
-          if (res.success) break;
-          if (attempt < 3) {
-            await new Promise(resolve => setTimeout(resolve, 2500));
+        const autoPrintCashier = localStorage.getItem('auto_print_cashier') !== 'false';
+        const autoPrintCustomer = localStorage.getItem('auto_print_customer') === 'true';
+        const autoPrintKitchen = localStorage.getItem('auto_print_kitchen') !== 'false';
+
+        const enabledOutputs = [];
+        if (autoPrintCashier) enabledOutputs.push('pos_receipt');
+        if (autoPrintCustomer) enabledOutputs.push('customer_receipt');
+        if (autoPrintKitchen) enabledOutputs.push('kitchen_ticket');
+
+        if (enabledOutputs.length === 0) {
+          return { success: false, skipped: true };
+        }
+
+        // Fetch store templates
+        const tplMap = {};
+        if (store?.id) {
+          try {
+            const { data: tpls } = await supabase
+              .from('receipt_templates')
+              .select('template_type, config_json')
+              .eq('store_id', store.id)
+              .eq('is_active', true);
+
+            (tpls || []).forEach(t => {
+              tplMap[t.template_type] = t.config_json;
+            });
+          } catch (e) {
+            console.warn("Could not load store receipt templates:", e);
           }
         }
-        if (!res.success) {
-          showNotification(`خطأ في الطباعة: ${res.error || 'الطابعة غير متصلة'}`, "error");
-        } else {
-          showNotification(isArabic ? "تم إرسال الطلب للطابعة بنجاح" : "Receipt printed successfully");
+
+        let overallSuccess = true;
+        let lastError = '';
+
+        for (let i = 0; i < enabledOutputs.length; i++) {
+          const outputType = enabledOutputs[i];
+          const templateConfig = tplMap[outputType] || tplMap['cashier_receipt'] || tplMap['pos_receipt'];
+
+          let jobRes = { success: false, error: 'Print job failed' };
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            jobRes = await printReceipt(order, localPrinterIP, store || 'Cashmint', {
+              templateConfig,
+              outputType,
+              skipFallback: true,
+              isArabic
+            });
+            if (jobRes.success) break;
+            if (attempt < 3) {
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          }
+
+          if (!jobRes.success) {
+            overallSuccess = false;
+            lastError = jobRes.error || 'Printer unreachable';
+          }
+
+          if (i < enabledOutputs.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 400));
+          }
         }
-        return res;
+
+        if (!overallSuccess) {
+          showNotification(`خطأ في الطباعة: ${lastError}`, "error");
+        } else {
+          showNotification(isArabic ? "تم إرسال الفاتورة للطابعة بنجاح" : "Receipt printed successfully");
+        }
+        return { success: overallSuccess, error: lastError };
       });
 
     autoPrintJobsRef.current.set(orderKey, job);
@@ -647,9 +713,6 @@ export default function App() {
   // Modifiers Modal State
   const [activeProduct, setActiveProduct] = useState(null);
   const [selectedModifiers, setSelectedModifiers] = useState([]);
-
-  // Notification State
-  const [notification, setNotification] = useState(null);
 
   // Maintenance Mode States
   const [isUnderMaintenance, setIsUnderMaintenance] = useState(false);
@@ -1243,7 +1306,7 @@ export default function App() {
               payload.new.id === activePaymentOrderIdRef.current
             ) {
               // Immediately clear reference to prevent duplicate printing on concurrent update events
-              activePaymentOrderIdRef.current = null;
+              setLastCompletedOrder(payload.new);
               enqueueAutoReceiptPrint(payload.new);
 
               if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
@@ -1412,11 +1475,6 @@ export default function App() {
     const poll = setInterval(pollPaymentResult, 2500);
     return () => { clearInterval(poll); supabase.removeChannel(channel); };
   }, [activePaymentRequestId, isArabic, deviceAuth?.deviceId, enqueueAutoReceiptPrint]);
-
-  const showNotification = (message, type = 'success') => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 3000);
-  };
 
 
   // Filtered Products
@@ -1754,7 +1812,7 @@ export default function App() {
         setActivePaymentRequestId(paymentRequest.id);
         setShowStripeModal(true);
         setStripeStatus(paymentRequest.status || 'pending');
-      } else {
+        setLastCompletedOrder(createdOrder);
         enqueueAutoReceiptPrint(createdOrder);
 
         if (orderCompleteSoundEnabled) playChime();
@@ -3186,7 +3244,7 @@ export default function App() {
             <div className="p-5 space-y-4 flex-1 overflow-y-auto min-h-[220px]">
               {activeSettingsTab === 'printer' && (
                 <div className="space-y-4">
-                  {/* Auto Print Toggle */}
+                  {/* Master Auto Print Toggle */}
                   <div className="flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750">
                     <div className="text-right">
                       <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{isArabic ? "طباعة الفاتورة تلقائياً" : "Auto-Print Receipt"}</p>
@@ -3205,6 +3263,54 @@ export default function App() {
                       <div className="w-10 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-amber-500"></div>
                     </label>
                   </div>
+
+                  {/* Auto Printing Outputs Checkboxes */}
+                  {autoPrintEnabled && (
+                    <div className="p-3.5 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750 space-y-2 text-right">
+                      <p className="text-[10px] font-extrabold text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+                        {isArabic ? "مخرجات الطباعة التلقائية (Auto Printing Outputs)" : "Auto Printing Outputs"}
+                      </p>
+
+                      <label className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{isArabic ? "إيصال الكاشير" : "Auto print Cashier Receipt"}</span>
+                        <input
+                          type="checkbox"
+                          checked={autoPrintCashier}
+                          onChange={(e) => {
+                            setAutoPrintCashier(e.target.checked);
+                            localStorage.setItem('auto_print_cashier', e.target.checked);
+                          }}
+                          className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500"
+                        />
+                      </label>
+
+                      <label className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{isArabic ? "إيصال العميل" : "Auto print Customer Receipt"}</span>
+                        <input
+                          type="checkbox"
+                          checked={autoPrintCustomer}
+                          onChange={(e) => {
+                            setAutoPrintCustomer(e.target.checked);
+                            localStorage.setItem('auto_print_customer', e.target.checked);
+                          }}
+                          className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500"
+                        />
+                      </label>
+
+                      <label className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                        <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{isArabic ? "تذكرة المطبخ" : "Auto print Kitchen Ticket"}</span>
+                        <input
+                          type="checkbox"
+                          checked={autoPrintKitchen}
+                          onChange={(e) => {
+                            setAutoPrintKitchen(e.target.checked);
+                            localStorage.setItem('auto_print_kitchen', e.target.checked);
+                          }}
+                          className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500"
+                        />
+                      </label>
+                    </div>
+                  )}
 
                   {/* Printer IP Input */}
                   <div className="flex flex-col gap-2 p-3.5 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750 text-right">

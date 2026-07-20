@@ -25,6 +25,13 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   const [saving, setSaving] = useState(false);
   const [testingPrinter, setTestingPrinter] = useState(false);
 
+  // Auto-print output toggles
+  const [autoPrintCashier, setAutoPrintCashier] = useState(() => localStorage.getItem('auto_print_cashier') !== 'false');
+  const [autoPrintCustomer, setAutoPrintCustomer] = useState(() => localStorage.getItem('auto_print_customer') === 'true');
+  const [autoPrintKitchen, setAutoPrintKitchen] = useState(() => localStorage.getItem('auto_print_kitchen') !== 'false');
+
+
+
   // Device Monitor & Activation States
   const [deviceTab, setDeviceTab] = useState('pos'); // 'pos' | 'payment'
   const [devices, setDevices] = useState([]);
@@ -407,8 +414,11 @@ export default function IntegrationSettings({ store, setStore, showNotification,
     try {
       setSaving(true);
       
-      // 1. Save local printer and temporary legacy Stripe settings.
+      // 1. Save local printer IP and auto-print output toggles
       localStorage.setItem('local_printer_ip', printerIP);
+      localStorage.setItem('auto_print_cashier', autoPrintCashier ? 'true' : 'false');
+      localStorage.setItem('auto_print_customer', autoPrintCustomer ? 'true' : 'false');
+      localStorage.setItem('auto_print_kitchen', autoPrintKitchen ? 'true' : 'false');
 
       // 2. Save HubRise settings to database
       if (store) {
@@ -526,6 +536,42 @@ export default function IntegrationSettings({ store, setStore, showNotification,
             <span className="text-[9px] text-slate-400 dark:text-slate-400 font-bold block leading-relaxed">
               * تأكد من اتصال جهاز التابلت والطابعة بنفس شبكة الواي فاي المحلية.
             </span>
+          </div>
+
+          <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-700">
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase">
+              {isArabic ? "مخرجات الطباعة التلقائية (Auto-Print Outputs)" : "Auto-Print Outputs"}
+            </span>
+
+            <label className="flex items-center justify-between p-2 rounded-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{isArabic ? "إيصال الكاشير (Cashier Receipt)" : "Cashier Receipt"}</span>
+              <input
+                type="checkbox"
+                checked={autoPrintCashier}
+                onChange={(e) => setAutoPrintCashier(e.target.checked)}
+                className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500"
+              />
+            </label>
+
+            <label className="flex items-center justify-between p-2 rounded-xl border border-slate-100 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{isArabic ? "إيصال العميل (Customer Receipt)" : "Customer Receipt"}</span>
+              <input
+                type="checkbox"
+                checked={autoPrintCustomer}
+                onChange={(e) => setAutoPrintCustomer(e.target.checked)}
+                className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500"
+              />
+            </label>
+
+            <label className="flex items-center justify-between p-2 rounded-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer">
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">{isArabic ? "تذكرة المطبخ (Kitchen Ticket)" : "Kitchen Ticket"}</span>
+              <input
+                type="checkbox"
+                checked={autoPrintKitchen}
+                onChange={(e) => setAutoPrintKitchen(e.target.checked)}
+                className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500"
+              />
+            </label>
           </div>
 
           <button

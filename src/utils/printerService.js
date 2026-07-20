@@ -1,24 +1,27 @@
 /**
- * Printer Service for Epson TM-T20IV
- * Sends raw XML print commands to the local printer IP using ePOS-Print XML API.
+ * Printer Service for Epson TM-T20IV & Dual Pipeline Printing Engine.
+ * Sends raw XML print commands to the local printer IP using ePOS-Print XML API
+ * or renders responsive thermal receipts in a silent iframe fallback.
+ * Supports Cashier Receipts, Customer Receipts, and Kitchen Tickets with Header Branding Customizations.
  */
+
+import { mergeAndEnforceReceiptConfig, getReceiptTranslation } from './receiptSchema';
 
 /**
  * Format string line with left and right aligned parts to fit printer paper width.
  */
 function formatLine(left, right, width = 40) {
-  const leftStr = String(left);
-  const rightStr = String(right);
+  const leftStr = String(left || '');
+  const rightStr = String(right || '');
   const spaceNeeded = width - (leftStr.length + rightStr.length);
   if (spaceNeeded > 0) {
     return leftStr + ' '.repeat(spaceNeeded) + rightStr;
   }
-  return leftStr.substring(0, width - rightStr.length - 1) + ' ' + rightStr;
+  return leftStr.substring(0, Math.max(1, width - rightStr.length - 1)) + ' ' + rightStr;
 }
 
 /**
  * Safe XML escaper for user-provided texts.
- * Only escapes standard entities (&, <, >, ", '), leaving other chars (like Arabic) intact.
  */
 function escapeXML(str) {
   if (str === null || str === undefined) return '';
@@ -35,114 +38,260 @@ function escapeXML(str) {
 }
 
 /**
- * Generates the Epson ePOS XML command string.
+ * Normalizes store input object or string into a structured store info object, taking template header overrides into account.
  */
-export function buildReceiptXML(order, storeName) {
-  const width = 40; // TM-T20IV standard column width
-  const separator = '-'.repeat(width);
+function normalizeStoreInfo(storeInput, config = {}) {
+  const baseStore = typeof storeInput === 'string'
+    ? { name: storeInput, legal_name: storeInput, address: '', vat_number: '', phone: '', logo_url: '' }
+    : {
+        name: storeInput?.name || 'Cashmint Store',
+        legal_name: storeInput?.legal_name || storeInput?.name || 'Cashmint POS SRL',
+        address: storeInput?.address || storeInput?.street_address || '',
+        vat_number: storeInput?.vat_number || storeInput?.tax_id || '',
+        phone: storeInput?.phone || '',
+        logo_url: storeInput?.logo_url || ''
+      };
+
+  return {
+    ...baseStore,
+    name: config.header?.custom_store_name || baseStore.name,
+    phone: config.header?.custom_phone || baseStore.phone,
+    logo_url: config.header?.logo_url || baseStore.logo_url
+  };
+}
+
+/**
+ * Generates the Epson ePOS XML command string driven by JSON template config.
+ */
+export function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
+  const outputType = options.outputType || options.templateType || 'pos_receipt';
+  const config = mergeAndEnforceReceiptConfig(options.templateConfig || {}, outputType);
+  const store = normalizeStoreInfo(storeInput, config);
+  const isKitchen = outputType === 'kitchen_ticket';
+
+  const width = config.paper_width === 58 ? 30 : 40;
+  const sepChar = config.styles?.divider_style === 'double' ? '=' : '-';
+  const separator = sepChar.repeat(width);
   const doubleSeparator = '='.repeat(width);
 
+  // Determine active language
+  let lang = config.language_mode;
+  if (lang === 'pos_language') {
+    lang = options.isArabic ? 'ar' : 'en';
+  }
+
+  const t = (key) => getReceiptTranslation(key, lang);
   let xml = '';
 
-  // 1. Center alignment for the Store Name (dynamic from the tenant session)
-  const escapedStoreName = escapeXML(storeName || 'Cashmint');
-  xml += `<text align="center">${escapedStoreName}&#10;</text>`;
-  xml += `<text align="center">نظام نقاط البيع / POS System&#10;</text>`;
-  xml += `<text align="center">${doubleSeparator}&#10;</text>`;
-
-  // Order meta info
-  const dateStr = order.raw_payload?.timestamp 
-    ? new Date(order.raw_payload.timestamp).toLocaleString('ar-BE') 
-    : new Date().toLocaleString('ar-BE');
-  
-  const escapedOrderId = escapeXML(order.id ? order.id.substring(0, 8) : 'NEW');
-  const orderType = order.raw_payload?.order_type || 'takeaway';
-  const typeLabel = orderType === 'takeaway' 
-    ? 'سفري / Takeaway' 
-    : orderType === 'dine_in' 
-      ? 'محلي / Dine In' 
-      : 'توصيل / Delivery';
-  const escapedTypeLabel = escapeXML(typeLabel);
-
-  xml += `<text align="left">رقم الطلب / Order: ${escapedOrderId}&#10;</text>`;
-  xml += `<text align="left">التاريخ / Date: ${escapeXML(dateStr)}&#10;</text>`;
-  xml += `<text align="left">نوع الطلب / Type: ${escapedTypeLabel}&#10;</text>`;
-
-  // Cashier Name if present
-  if (order.raw_payload?.cashier_name) {
-    const escapedCashier = escapeXML(order.raw_payload.cashier_name);
-    xml += `<text align="left">الكاشير / Cashier: ${escapedCashier}&#10;</text>`;
-  }
-
-  // Coupon Code if present
-  if (order.raw_payload?.coupon_code) {
-    const escapedCoupon = escapeXML(order.raw_payload.coupon_code);
-    xml += `<text align="left">كود الخصم / Coupon: ${escapedCoupon}&#10;</text>`;
-  }
-
-  xml += `<text align="left">${separator}&#10;</text>`;
-
-  // 2. Left alignment for order items (Item Name, Qty, Price)
-  xml += `<text align="left">${escapeXML(formatLine('العنصر / Item', 'السعر / Price', width))}&#10;</text>`;
-  xml += `<text align="left">${separator}&#10;</text>`;
-
-  const items = order.raw_payload?.cart_items || [];
-  items.forEach(item => {
-    const leftPart = `${item.name} x${item.quantity}`;
-    const rightPart = `${parseFloat(item.price * item.quantity).toFixed(2)} EUR`;
-    xml += `<text align="left">${escapeXML(formatLine(leftPart, rightPart, width))}&#10;</text>`;
-
-    // Modifiers if any
-    if (item.modifiers && item.modifiers.length > 0) {
-      item.modifiers.forEach(mod => {
-        const modLeft = `  + ${mod.name}`;
-        const modRight = `+${parseFloat(mod.price_adjustment * item.quantity).toFixed(2)} EUR`;
-        xml += `<text align="left">${escapeXML(formatLine(modLeft, modRight, width))}&#10;</text>`;
-      });
-    }
-  });
-
-  xml += `<text align="left">${separator}&#10;</text>`;
-
-  // 3. Separator lines, Subtotal, VAT, and Final Total
+  const raw = order.raw_payload || {};
+  const items = raw.cart_items || [];
   const subtotal = Number(order.total_amount || 0);
   const vatAmount = Number(order.vat_amount ?? (subtotal * (0.12 / 1.12)));
   const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? (subtotal - vatAmount));
 
-  // Payment Label/Method if present
-  if (order.raw_payload?.payment_label) {
-    const escapedPaymentLabel = escapeXML(order.raw_payload.payment_label);
-    xml += `<text align="left">طريقة الدفع / Payment: ${escapedPaymentLabel}&#10;</text>`;
-    xml += `<text align="left">${separator}&#10;</text>`;
-  }
+  // Render sections in configured order
+  const sectionsOrder = config.sections_order || ['header', 'meta', 'items', 'subtotals', 'tax_breakdown', 'payments', 'footer'];
 
-  xml += `<text align="left">${escapeXML(formatLine('المجموع الفرعي / Subtotal:', `${subtotalWithoutVat.toFixed(2)} EUR`, width))}&#10;</text>`;
-  xml += `<text align="left">${escapeXML(formatLine('ضريبة القيمة المضافة / VAT (12%):', `${vatAmount.toFixed(2)} EUR`, width))}&#10;</text>`;
-  
-  // Total line uses double size formatting (temporarily using plain text with standard width)
-  const totalText = formatLine('المجموع الكلي / TOTAL:', `${subtotal.toFixed(2)} EUR`, width);
-  xml += `<text align="left">${escapeXML(totalText)}&#10;</text>`;
-  
-  xml += `<text align="center">${doubleSeparator}&#10;</text>`;
-  xml += `<text align="center">شكراً لزيارتكم! / Thank you for your visit!&#10;</text>`;
-  
-  // Extra feed space
+  sectionsOrder.forEach((sectionKey) => {
+    switch (sectionKey) {
+      case 'header': {
+        const align = config.header?.logo_align || 'center';
+
+        if (config.header?.show_store_name && store.name) {
+          xml += `<text align="${align}" font="font_a" em="true">${escapeXML(store.name)}&#10;</text>`;
+        }
+
+        if (config.header?.show_legal_name && store.legal_name && store.legal_name !== store.name) {
+          xml += `<text align="${align}">${escapeXML(store.legal_name)}&#10;</text>`;
+        }
+        if (config.header?.show_address && store.address) {
+          xml += `<text align="${align}">${escapeXML(store.address)}&#10;</text>`;
+        }
+        if (config.header?.show_vat_number && store.vat_number) {
+          xml += `<text align="${align}">${escapeXML(store.vat_number)}&#10;</text>`;
+        }
+        if (config.header?.show_phone && store.phone) {
+          xml += `<text align="${align}">Tel: ${escapeXML(store.phone)}&#10;</text>`;
+        }
+
+        if (config.header?.custom_lines && Array.isArray(config.header.custom_lines)) {
+          config.header.custom_lines.forEach(line => {
+            if (line && line.trim()) {
+              xml += `<text align="${align}">${escapeXML(line.trim())}&#10;</text>`;
+            }
+          });
+        }
+        if (config.header?.show_store_name || config.header?.show_legal_name || (config.header?.custom_lines && config.header.custom_lines.length > 0)) {
+          xml += `<text align="center">${separator}&#10;</text>`;
+        }
+        break;
+      }
+
+      case 'meta': {
+        if (isKitchen) {
+          // Large prominent order type & table header for kitchen
+          const orderType = raw.order_type || 'takeaway';
+          const typeLabel = orderType === 'takeaway' ? t('takeaway') : orderType === 'dine_in' ? t('dine_in') : t('delivery');
+          xml += `<text align="center" font="font_a" em="true" dw="true" dh="true">${escapeXML(typeLabel)}&#10;</text>`;
+
+          if (raw.table_number) {
+            xml += `<text align="center" font="font_a" em="true">${escapeXML(t('table'))}: ${escapeXML(raw.table_number)}&#10;</text>`;
+          }
+          xml += `<text align="center">${doubleSeparator}&#10;</text>`;
+        }
+
+        const receiptNum = order.receipt_number || (order.id ? order.id.substring(0, 8) : 'NEW');
+        if (config.meta?.show_receipt_number) {
+          xml += `<text align="left">${escapeXML(t('receipt_num'))}: ${escapeXML(receiptNum)}&#10;</text>`;
+        }
+        if (config.meta?.show_order_id && order.id && order.id.substring(0, 8) !== receiptNum) {
+          xml += `<text align="left">${escapeXML(t('order_num'))}: ${escapeXML(order.id.substring(0, 8))}&#10;</text>`;
+        }
+
+        if (config.meta?.show_timestamp) {
+          const dateStr = raw.timestamp 
+            ? new Date(raw.timestamp).toLocaleString(lang === 'ar' ? 'ar-BE' : 'en-BE') 
+            : new Date().toLocaleString('en-BE');
+          xml += `<text align="left">${escapeXML(t('date'))}: ${escapeXML(dateStr)}&#10;</text>`;
+        }
+
+        if (!isKitchen && config.meta?.show_order_type) {
+          const orderType = raw.order_type || 'takeaway';
+          const typeLabel = orderType === 'takeaway' ? t('takeaway') : orderType === 'dine_in' ? t('dine_in') : t('delivery');
+          xml += `<text align="left">${escapeXML(t('type'))}: ${escapeXML(typeLabel)}&#10;</text>`;
+        }
+
+        if (config.meta?.show_cashier_name && raw.cashier_name) {
+          xml += `<text align="left">${escapeXML(t('cashier'))}: ${escapeXML(raw.cashier_name)}&#10;</text>`;
+        }
+
+        if (!isKitchen && config.meta?.show_table_number && raw.table_number) {
+          xml += `<text align="left">${escapeXML(t('table'))}: ${escapeXML(raw.table_number)}&#10;</text>`;
+        }
+
+        if (config.meta?.show_customer_info && raw.customer_name) {
+          xml += `<text align="left">${escapeXML(t('customer'))}: ${escapeXML(raw.customer_name)}&#10;</text>`;
+        }
+
+        xml += `<text align="left">${separator}&#10;</text>`;
+        break;
+      }
+
+      case 'items': {
+        const showPrices = config.items?.show_prices !== false;
+        if (showPrices) {
+          xml += `<text align="left" em="true">${escapeXML(formatLine(t('item'), t('price'), width))}&#10;</text>`;
+        } else {
+          xml += `<text align="left" em="true">${escapeXML(t('item'))}&#10;</text>`;
+        }
+        xml += `<text align="left">${separator}&#10;</text>`;
+
+        items.forEach(item => {
+          const leftPart = `${item.quantity}x ${item.name}`;
+          if (showPrices) {
+            const rightPart = `${parseFloat(item.price * item.quantity).toFixed(2)} EUR`;
+            xml += `<text align="left" ${isKitchen ? 'em="true"' : ''}>${escapeXML(formatLine(leftPart, rightPart, width))}&#10;</text>`;
+          } else {
+            xml += `<text align="left" font="font_a" em="true">${escapeXML(leftPart)}&#10;</text>`;
+          }
+
+          if (config.items?.show_modifiers && item.modifiers && item.modifiers.length > 0) {
+            item.modifiers.forEach(mod => {
+              const modLeft = `  + ${mod.name}`;
+              if (showPrices && mod.price_adjustment) {
+                const modRight = `+${parseFloat(mod.price_adjustment * item.quantity).toFixed(2)} EUR`;
+                xml += `<text align="left">${escapeXML(formatLine(modLeft, modRight, width))}&#10;</text>`;
+              } else {
+                xml += `<text align="left" em="true">${escapeXML(modLeft)}&#10;</text>`;
+              }
+            });
+          }
+        });
+
+        xml += `<text align="left">${separator}&#10;</text>`;
+        break;
+      }
+
+      case 'subtotals': {
+        if (!isKitchen) {
+          xml += `<text align="left">${escapeXML(formatLine(t('subtotal') + ':', `${subtotalWithoutVat.toFixed(2)} EUR`, width))}&#10;</text>`;
+          xml += `<text align="left">${escapeXML(formatLine(t('vat') + ':', `${vatAmount.toFixed(2)} EUR`, width))}&#10;</text>`;
+          xml += `<text align="left" em="true">${escapeXML(formatLine(t('total') + ':', `${subtotal.toFixed(2)} EUR`, width))}&#10;</text>`;
+          xml += `<text align="center">${separator}&#10;</text>`;
+        }
+        break;
+      }
+
+      case 'tax_breakdown': {
+        if (!isKitchen && config.tax_breakdown?.show_detailed_rates) {
+          xml += `<text align="left" em="true">${escapeXML(t('vat_breakdown'))}&#10;</text>`;
+          xml += `<text align="left">${escapeXML(formatLine(`${t('vat_rate')} | ${t('vat_net')}`, t('vat_tax'), width))}&#10;</text>`;
+          const activeRate = raw.order_type === 'dine_in' ? '12%' : '6%';
+          xml += `<text align="left">${escapeXML(formatLine(`${activeRate} | ${subtotalWithoutVat.toFixed(2)} EUR`, `${vatAmount.toFixed(2)} EUR`, width))}&#10;</text>`;
+          xml += `<text align="center">${separator}&#10;</text>`;
+        }
+        break;
+      }
+
+      case 'payments': {
+        if (!isKitchen && config.payments?.show_payment_method) {
+          const payMethod = raw.payment_label || order.payment_method || t('cash');
+          xml += `<text align="left">${escapeXML(formatLine(t('payment') + ':', payMethod, width))}&#10;</text>`;
+        }
+        if (!isKitchen && config.payments?.show_change_due && raw.change_due !== undefined) {
+          xml += `<text align="left">${escapeXML(formatLine(t('change') + ':', `${parseFloat(raw.change_due || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
+        }
+        if (!isKitchen) {
+          xml += `<text align="center">${doubleSeparator}&#10;</text>`;
+        }
+        break;
+      }
+
+      case 'footer': {
+        if (config.footer?.custom_lines && Array.isArray(config.footer.custom_lines)) {
+          config.footer.custom_lines.forEach(line => {
+            if (line && line.trim()) {
+              xml += `<text align="center" ${isKitchen ? 'em="true"' : ''}>${escapeXML(line.trim())}&#10;</text>`;
+            }
+          });
+        } else if (!isKitchen) {
+          xml += `<text align="center">${escapeXML(t('thank_you'))}&#10;</text>`;
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  });
+
   xml += `<feed line="3"/>`;
-
-  // 5. Paper cut command
   xml += `<cut type="feed"/>`;
 
   return xml;
 }
 
-
 /**
  * Fallback silent receipt printing using a hidden iframe and browser print engine.
- * Renders a clean 76mm receipt layout with full Arabic support.
+ * Renders structured layout matching the receipt configuration schema and header branding overrides.
  */
-export function printViaIframeFallback(order, storeName = 'Cashmint') {
+export function printViaIframeFallback(order, storeInput = 'Cashmint', options = {}) {
   return new Promise((resolve, reject) => {
     try {
+      const outputType = options.outputType || options.templateType || 'pos_receipt';
+      const config = mergeAndEnforceReceiptConfig(options.templateConfig || {}, outputType);
+      const store = normalizeStoreInfo(storeInput, config);
+      const isKitchen = outputType === 'kitchen_ticket';
+      const cssWidth = config.paper_width === 58 ? '54mm' : '72mm';
+
+      let lang = config.language_mode;
+      if (lang === 'pos_language') {
+        lang = options.isArabic ? 'ar' : 'en';
+      }
+
+      const t = (key) => getReceiptTranslation(key, lang);
+      const isRtl = lang === 'ar';
+
       // Create hidden iframe
       const iframe = document.createElement('iframe');
       iframe.style.position = 'fixed';
@@ -153,146 +302,240 @@ export function printViaIframeFallback(order, storeName = 'Cashmint') {
       iframe.style.border = '0';
       document.body.appendChild(iframe);
 
-      const items = order.raw_payload?.cart_items || [];
+      const raw = order.raw_payload || {};
+      const items = raw.cart_items || [];
       const subtotal = Number(order.total_amount || 0);
       const vatAmount = Number(order.vat_amount ?? (subtotal * (0.12 / 1.12)));
       const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? (subtotal - vatAmount));
 
-      const dateStr = order.raw_payload?.timestamp 
-        ? new Date(order.raw_payload.timestamp).toLocaleString('ar-BE') 
-        : new Date().toLocaleString('ar-BE');
-        
-      const orderType = order.raw_payload?.order_type || 'takeaway';
-      const typeLabel = orderType === 'takeaway' 
-        ? 'سفري / Takeaway' 
-        : orderType === 'dine_in' 
-          ? 'محلي / Dine In' 
-          : 'توصيل / Delivery';
+      let bodyHtml = '';
+      const sectionsOrder = config.sections_order || ['header', 'meta', 'items', 'subtotals', 'tax_breakdown', 'payments', 'footer'];
 
-      let html = `
+      sectionsOrder.forEach((sectionKey) => {
+        switch (sectionKey) {
+          case 'header': {
+            const align = config.header?.logo_align || 'center';
+            bodyHtml += `<div style="text-align: ${align};">`;
+            if (config.header?.show_logo && store.logo_url) {
+              bodyHtml += `<div style="text-align: ${align}; margin-bottom: 6px;">
+                <img src="${store.logo_url}" style="max-width: 80px; max-height: 80px; filter: grayscale(100%); object-fit: contain;" />
+              </div>`;
+            }
+            if (config.header?.show_store_name && store.name) {
+              bodyHtml += `<div className="header-title" style="font-size: 15px; font-weight: bold;">${store.name}</div>`;
+            }
+            if (config.header?.show_legal_name && store.legal_name && store.legal_name !== store.name) {
+              bodyHtml += `<div>${store.legal_name}</div>`;
+            }
+            if (config.header?.show_address && store.address) {
+              bodyHtml += `<div>${store.address}</div>`;
+            }
+            if (config.header?.show_vat_number && store.vat_number) {
+              bodyHtml += `<div>${store.vat_number}</div>`;
+            }
+            if (config.header?.show_phone && store.phone) {
+              bodyHtml += `<div>Tel: ${store.phone}</div>`;
+            }
+            if (config.header?.custom_lines && Array.isArray(config.header.custom_lines)) {
+              config.header.custom_lines.forEach(l => {
+                if (l && l.trim()) bodyHtml += `<div>${l.trim()}</div>`;
+              });
+            }
+            bodyHtml += `</div>`;
+            if (config.header?.show_store_name || config.header?.show_legal_name || (config.header?.custom_lines && config.header.custom_lines.length > 0)) {
+              bodyHtml += `<div class="divider"></div>`;
+            }
+            break;
+          }
+
+          case 'meta': {
+            const receiptNum = order.receipt_number || (order.id ? order.id.substring(0, 8) : 'NEW');
+            bodyHtml += `<div>`;
+
+            if (isKitchen) {
+              const orderType = raw.order_type || 'takeaway';
+              const typeLabel = orderType === 'takeaway' ? t('takeaway') : orderType === 'dine_in' ? t('dine_in') : t('delivery');
+              bodyHtml += `<div style="font-size: 18px; font-weight: 900; text-align: center; text-transform: uppercase;">${typeLabel}</div>`;
+              if (raw.table_number) {
+                bodyHtml += `<div style="font-size: 14px; font-weight: bold; text-align: center;">${t('table')}: ${raw.table_number}</div>`;
+              }
+              bodyHtml += `<div class="double-divider"></div>`;
+            }
+
+            if (config.meta?.show_receipt_number) {
+              bodyHtml += `<div>${t('receipt_num')}: ${receiptNum}</div>`;
+            }
+            if (config.meta?.show_order_id && order.id && order.id.substring(0, 8) !== receiptNum) {
+              bodyHtml += `<div>${t('order_num')}: ${order.id.substring(0, 8)}</div>`;
+            }
+            if (config.meta?.show_timestamp) {
+              const dateStr = raw.timestamp 
+                ? new Date(raw.timestamp).toLocaleString(isRtl ? 'ar-BE' : 'en-BE') 
+                : new Date().toLocaleString('en-BE');
+              bodyHtml += `<div>${t('date')}: ${dateStr}</div>`;
+            }
+            if (!isKitchen && config.meta?.show_order_type) {
+              const orderType = raw.order_type || 'takeaway';
+              const typeLabel = orderType === 'takeaway' ? t('takeaway') : orderType === 'dine_in' ? t('dine_in') : t('delivery');
+              bodyHtml += `<div>${t('type')}: ${typeLabel}</div>`;
+            }
+            if (config.meta?.show_cashier_name && raw.cashier_name) {
+              bodyHtml += `<div>${t('cashier')}: ${raw.cashier_name}</div>`;
+            }
+            if (!isKitchen && config.meta?.show_table_number && raw.table_number) {
+              bodyHtml += `<div>${t('table')}: ${raw.table_number}</div>`;
+            }
+            bodyHtml += `</div><div class="divider"></div>`;
+            break;
+          }
+
+          case 'items': {
+            const showPrices = config.items?.show_prices !== false;
+            bodyHtml += `
+              <div class="item-row" style="font-weight: bold;">
+                <span class="item-name">${t('item')}</span>
+                ${showPrices ? `<span class="item-price">${t('price')}</span>` : ''}
+              </div>
+              <div class="divider"></div>
+            `;
+
+            items.forEach(item => {
+              const itemTotal = parseFloat(item.price * item.quantity).toFixed(2);
+              bodyHtml += `
+                <div class="item-row" style="${isKitchen ? 'font-size: 15px; font-weight: bold; margin-bottom: 2px;' : ''}">
+                  <span class="item-name">${item.quantity}x ${item.name}</span>
+                  ${showPrices ? `<span class="item-price">${itemTotal} EUR</span>` : ''}
+                </div>
+              `;
+
+              if (config.items?.show_modifiers && item.modifiers && item.modifiers.length > 0) {
+                item.modifiers.forEach(mod => {
+                  const modAdjustment = parseFloat(mod.price_adjustment * item.quantity).toFixed(2);
+                  bodyHtml += `
+                    <div class="modifier-row" style="${isKitchen ? 'font-size: 12px; font-weight: bold; color: #000;' : ''}">
+                      <span>  + ${mod.name}</span>
+                      ${showPrices && mod.price_adjustment ? `<span>+${modAdjustment} EUR</span>` : ''}
+                    </div>
+                  `;
+                });
+              }
+            });
+
+            bodyHtml += `<div class="divider"></div>`;
+            break;
+          }
+
+          case 'subtotals': {
+            if (!isKitchen) {
+              bodyHtml += `
+                <div class="item-row">
+                  <span>${t('subtotal')}:</span>
+                  <span>${subtotalWithoutVat.toFixed(2)} EUR</span>
+                </div>
+                <div class="item-row">
+                  <span>${t('vat')}:</span>
+                  <span>${vatAmount.toFixed(2)} EUR</span>
+                </div>
+                <div class="total-row">
+                  <span>${t('total')}:</span>
+                  <span>${parseFloat(subtotal).toFixed(2)} EUR</span>
+                </div>
+                <div class="divider"></div>
+              `;
+            }
+            break;
+          }
+
+          case 'tax_breakdown': {
+            if (!isKitchen && config.tax_breakdown?.show_detailed_rates) {
+              const activeRate = raw.order_type === 'dine_in' ? '12%' : '6%';
+              bodyHtml += `
+                <div style="font-weight: bold; margin-bottom: 3px;">${t('vat_breakdown')}</div>
+                <div class="item-row" style="font-size: 11px;">
+                  <span>${activeRate} | ${subtotalWithoutVat.toFixed(2)} EUR</span>
+                  <span>${vatAmount.toFixed(2)} EUR</span>
+                </div>
+                <div class="divider"></div>
+              `;
+            }
+            break;
+          }
+
+          case 'payments': {
+            if (!isKitchen && config.payments?.show_payment_method) {
+              const payMethod = raw.payment_label || order.payment_method || t('cash');
+              bodyHtml += `
+                <div class="item-row">
+                  <span>${t('payment')}:</span>
+                  <span>${payMethod}</span>
+                </div>
+              `;
+            }
+            if (!isKitchen && config.payments?.show_change_due && raw.change_due !== undefined) {
+              bodyHtml += `
+                <div class="item-row">
+                  <span>${t('change')}:</span>
+                  <span>${parseFloat(raw.change_due || 0).toFixed(2)} EUR</span>
+                </div>
+              `;
+            }
+            if (!isKitchen) {
+              bodyHtml += `<div class="double-divider"></div>`;
+            }
+            break;
+          }
+
+          case 'footer': {
+            bodyHtml += `<div class="text-center" style="${isKitchen ? 'font-weight: bold;' : ''}">`;
+            if (config.footer?.custom_lines && Array.isArray(config.footer.custom_lines)) {
+              config.footer.custom_lines.forEach(l => {
+                if (l && l.trim()) bodyHtml += `<div>${l.trim()}</div>`;
+              });
+            } else if (!isKitchen) {
+              bodyHtml += `<div>${t('thank_you')}</div>`;
+            }
+            bodyHtml += `</div>`;
+            break;
+          }
+
+          default:
+            break;
+        }
+      });
+
+      const fullHtml = `
 <!DOCTYPE html>
-<html lang="ar">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
-  <title>Receipt Print Fallback</title>
+  <title>Receipt Print</title>
   <style>
     @media print {
-      body {
-        margin: 0;
-        padding: 0;
-      }
+      body { margin: 0; padding: 0; }
     }
     body {
       font-family: 'Courier New', Courier, monospace;
       font-size: 12px;
       line-height: 1.4;
-      width: 72mm;
+      width: ${cssWidth};
       margin: 0 auto;
       padding: 5px;
       color: #000;
-      direction: rtl;
-      text-align: right;
+      direction: ${isRtl ? 'rtl' : 'ltr'};
+      text-align: ${isRtl ? 'right' : 'left'};
     }
     .text-center { text-align: center; }
-    .text-left { text-align: left; }
-    .text-right { text-align: right; }
-    .divider {
-      border-top: 1px dashed #000;
-      margin: 6px 0;
-    }
-    .double-divider {
-      border-top: 2px double #000;
-      margin: 6px 0;
-    }
-    .item-row {
-      display: flex;
-      justify-content: space-between;
-    }
-    .item-name {
-      flex: 1;
-      text-align: right;
-    }
-    .item-price {
-      text-align: left;
-      min-width: 80px;
-    }
-    .modifier-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: 10px;
-      padding-right: 12px;
-      color: #555;
-    }
-    .header-title {
-      font-size: 15px;
-      font-weight: bold;
-      margin-bottom: 2px;
-    }
-    .total-row {
-      display: flex;
-      justify-content: space-between;
-      font-size: 13px;
-      font-weight: bold;
-      margin-top: 5px;
-    }
+    .divider { border-top: 1px dashed #000; margin: 6px 0; }
+    .double-divider { border-top: 2px double #000; margin: 6px 0; }
+    .item-row { display: flex; justify-content: space-between; }
+    .item-name { flex: 1; }
+    .item-price { min-width: 70px; text-align: ${isRtl ? 'left' : 'right'}; }
+    .modifier-row { display: flex; justify-content: space-between; font-size: 10px; color: #444; }
+    .total-row { display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-top: 4px; }
   </style>
 </head>
 <body>
-  <div class="text-center header-title">${storeName}</div>
-  <div class="text-center">نظام نقاط البيع / POS System</div>
-  <div class="double-divider"></div>
-  
-  <div>رقم الطلب / Order: ${order.id ? order.id.substring(0, 8) : 'NEW'}</div>
-  <div>التاريخ / Date: ${dateStr}</div>
-  <div>نوع الطلب / Type: ${typeLabel}</div>
-  <div class="divider"></div>
-  
-  <div class="item-row" style="font-weight: bold;">
-    <span class="item-name">العنصر / Item</span>
-    <span class="item-price">السعر / Price</span>
-  </div>
-  <div class="divider"></div>
-`;
-
-      items.forEach(item => {
-        const itemTotal = parseFloat(item.price * item.quantity).toFixed(2);
-        html += `
-  <div class="item-row">
-    <span class="item-name">${item.name} x${item.quantity}</span>
-    <span class="item-price">${itemTotal} EUR</span>
-  </div>
-`;
-
-        if (item.modifiers && item.modifiers.length > 0) {
-          item.modifiers.forEach(mod => {
-            const modAdjustment = parseFloat(mod.price_adjustment * item.quantity).toFixed(2);
-            html += `
-  <div class="modifier-row">
-    <span>  + ${mod.name}</span>
-    <span>+${modAdjustment} EUR</span>
-  </div>
-`;
-          });
-        }
-      });
-
-      html += `
-  <div class="divider"></div>
-  <div class="item-row">
-    <span>المجموع الفرعي / Subtotal:</span>
-    <span>${subtotalWithoutVat.toFixed(2)} EUR</span>
-  </div>
-  <div class="item-row">
-    <span>ضريبة القيمة المضافة / VAT (12%):</span>
-    <span>${vatAmount.toFixed(2)} EUR</span>
-  </div>
-  <div class="total-row">
-    <span>المجموع الكلي / TOTAL:</span>
-    <span>${parseFloat(subtotal).toFixed(2)} EUR</span>
-  </div>
-  <div class="double-divider"></div>
-  <div class="text-center">شكراً لزيارتكم! / Thank you for your visit!</div>
-  
+  ${bodyHtml}
   <script>
     window.onload = function() {
       window.focus();
@@ -305,10 +548,9 @@ export function printViaIframeFallback(order, storeName = 'Cashmint') {
 
       const doc = iframe.contentWindow.document;
       doc.open();
-      doc.write(html);
+      doc.write(fullHtml);
       doc.close();
 
-      // Resolve successfully, cleaning up iframe after print dialog is triggered
       setTimeout(() => {
         if (iframe && iframe.parentNode) {
           iframe.parentNode.removeChild(iframe);
@@ -324,59 +566,29 @@ export function printViaIframeFallback(order, storeName = 'Cashmint') {
 }
 
 /**
- * Epson ePOS-Print API Error Codes and Translations.
+ * Epson Error Code Translations.
  */
 export const EPSON_ERROR_TRANSLATIONS = {
-  'EX_BADPORT': {
-    en: 'Bad interface port specified.',
-    ar: 'منفذ الاتصال المحدد غير صالح.'
-  },
-  'EX_TIMEOUT': {
-    en: 'Connection timeout. Check printer power and network.',
-    ar: 'انتهت مهلة الاتصال. تحقق من تشغيل الطابعة وتوصيل الشبكة.'
-  },
-  'EPTR_AUTOCUTTER': {
-    en: 'Autocutter error. Paper might be jammed.',
-    ar: 'خطأ في القاطع التلقائي. قد يكون هناك انحشار للورق.'
-  },
-  'EPTR_COVER_OPEN': {
-    en: 'Printer cover is open. Please close it.',
-    ar: 'غطاء الطابعة مفتوح. يرجى إغلاقه.'
-  },
-  'EPTR_EMPTY': {
-    en: 'Printer is offline or empty.',
-    ar: 'الطابعة غير متصلة أو فارغة.'
-  },
-  'EPTR_REC_EMPTY': {
-    en: 'Out of paper. Please load a new roll.',
-    ar: 'ورق الطباعة فارغ. يرجى تركيب رول ورق جديد.'
-  },
-  'EXT_DEV_NOT_FOUND': {
-    en: 'Local printer device not found.',
-    ar: 'لم يتم العثور على الطابعة المحلية.'
-  },
-  'EPTR_UNRECOVERABLE': {
-    en: 'Unrecoverable printer hardware error.',
-    ar: 'حدث خطأ غير قابل للاسترداد في عتاد الطابعة.'
-  }
+  'EX_BADPORT': { en: 'Bad interface port specified.', ar: 'منفذ الاتصال المحدد غير صالح.' },
+  'EX_TIMEOUT': { en: 'Connection timeout. Check printer power and network.', ar: 'انتهت مهلة الاتصال. تحقق من تشغيل الطابعة وتوصيل الشبكة.' },
+  'EPTR_AUTOCUTTER': { en: 'Autocutter error. Paper might be jammed.', ar: 'خطأ في القاطع التلقائي. قد يكون هناك انحشار للورق.' },
+  'EPTR_COVER_OPEN': { en: 'Printer cover is open. Please close it.', ar: 'غطاء الطابعة مفتوح. يرجى إغلاقه.' },
+  'EPTR_EMPTY': { en: 'Printer is offline or empty.', ar: 'الطابعة غير متصلة أو فارغة.' },
+  'EPTR_REC_EMPTY': { en: 'Out of paper. Please load a new roll.', ar: 'ورق الطباعة فارغ. يرجى تركيب رول ورق جديد.' },
+  'EXT_DEV_NOT_FOUND': { en: 'Local printer device not found.', ar: 'لم يتم العثور على الطابعة المحلية.' },
+  'EPTR_UNRECOVERABLE': { en: 'Unrecoverable printer hardware error.', ar: 'حدث خطأ غير قابل للاسترداد في عتاد الطابعة.' }
 };
 
-/**
- * Translates Epson ePOS printer error code to a friendly message.
- */
 export function getFriendlyEpsonError(code, isArabic = true) {
   const trans = EPSON_ERROR_TRANSLATIONS[code];
-  if (trans) {
-    return isArabic ? trans.ar : trans.en;
-  }
+  if (trans) return isArabic ? trans.ar : trans.en;
   return isArabic ? `خطأ في الطابعة (${code})` : `Printer Error (${code})`;
 }
 
 /**
- * Sends a print request to the Epson TM-T20IV printer via ePOS-Print XML POST.
- * Auto-falls back to silent iframe printing if direct endpoint is blocked or unreachable.
+ * Main Print Receipt Entrypoint.
  */
-export async function printReceipt(order, printerIP, storeName = 'Cashmint', options = {}) {
+export async function printReceipt(order, printerIP, storeInput = 'Cashmint', options = {}) {
   const cleanIP = printerIP ? printerIP.trim() : '';
 
   if (!cleanIP) {
@@ -390,14 +602,13 @@ export async function printReceipt(order, printerIP, storeName = 'Cashmint', opt
     }
     console.warn("No printer IP configured. Triggering fallback browser printing.");
     try {
-      const res = await printViaIframeFallback(order, storeName);
+      const res = await printViaIframeFallback(order, storeInput, options);
       return res;
     } catch (err) {
       return { success: false, transport: "iframe", endpoint: "", error: err.message };
     }
   }
 
-  // Final ePOS-Print HTTPS URL
   const endpoint = `https://${cleanIP}/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`;
   
   let xmlContent = '';
@@ -407,10 +618,9 @@ export async function printReceipt(order, printerIP, storeName = 'Cashmint', opt
 <feed line="3"/>
 <cut type="feed"/>`;
   } else {
-    xmlContent = buildReceiptXML(order, storeName);
+    xmlContent = buildReceiptXML(order, storeInput, options);
   }
 
-  // Wrap in a SOAP Envelope
   const soapPayload = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
@@ -442,26 +652,15 @@ export async function printReceipt(order, printerIP, storeName = 'Cashmint', opt
 
     responseText = await response.text();
 
-    if (isDebug) {
-      console.log("ePOS HTTP Status:", response.status);
-      console.log("ePOS Raw Response:", responseText);
-    }
-
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(responseText, "text/xml");
-
-    // Check for SOAP Fault/detail tags first
     const faultTag = xmlDoc.getElementsByTagName('Fault')[0] || xmlDoc.getElementsByTagName('detail')[0];
     if (faultTag) {
       const faultString = xmlDoc.getElementsByTagName('faultstring')[0]?.textContent || "SOAP Fault";
-      const faultCode = xmlDoc.getElementsByTagName('faultcode')[0]?.textContent || "";
-      if (isDebug) {
-        console.log("ePOS SOAP Fault details:", { faultString, faultCode });
-      }
       throw new Error(faultString);
     }
 
@@ -472,10 +671,6 @@ export async function printReceipt(order, printerIP, storeName = 'Cashmint', opt
 
     const successAttr = responseTag.getAttribute('success');
     const codeAttr = responseTag.getAttribute('code');
-
-    if (isDebug) {
-      console.log("ePOS Parsed Response Attributes:", { success: successAttr, code: codeAttr });
-    }
 
     if (successAttr === 'true' || successAttr === '1') {
       return {
@@ -511,7 +706,7 @@ export async function printReceipt(order, printerIP, storeName = 'Cashmint', opt
 
     console.warn("Direct ePOS-Print failed. Falling back to browser iframe printing...", error);
     try {
-      const fallbackRes = await printViaIframeFallback(order, storeName);
+      const fallbackRes = await printViaIframeFallback(order, storeInput, options);
       return fallbackRes;
     } catch (fallbackError) {
       return { 

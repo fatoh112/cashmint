@@ -5,6 +5,7 @@ import SalesHistory from './SalesHistory';
 import FullTransactionHistory from './FullTransactionHistory';
 import AccountantExports from './AccountantExports';
 import TaxManagement from './TaxManagement';
+import ReceiptDesigner from './ReceiptDesigner';
 const OnboardingWizard = React.lazy(() => import('../components/OnboardingWizard'));
 import ItemsDashboard from '../components/admin/ItemsDashboard';
 import AIChatWidget from '../components/admin/AIChatWidget';
@@ -21,6 +22,7 @@ import {
   Pencil,
   FileText,
   ReceiptText,
+  Printer,
   History
 } from 'lucide-react';
 
@@ -381,6 +383,18 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
             </button>
 
             <button
+              onClick={() => setActiveModule('receipt_designer')}
+              className={`w-full px-4 py-3 rounded-xl font-bold text-xs transition-all flex items-center gap-3 cursor-pointer ${
+                activeModule === 'receipt_designer'
+                  ? 'bg-amber-500 text-white shadow-md shadow-amber-500/10'
+                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-750 hover:text-slate-800 dark:hover:text-white'
+              }`}
+            >
+              <Printer className="w-4 h-4" />
+              <span>{isArabic ? "مصمم الفواتير" : "Receipt Designer"}</span>
+            </button>
+
+            <button
               onClick={() => setActiveModule('accounting')}
               className={`w-full px-4 py-3 rounded-xl font-bold text-xs transition-all flex items-center gap-3 cursor-pointer ${
                 activeModule === 'accounting'
@@ -455,6 +469,14 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
             <IntegrationSettings 
               store={store} 
               setStore={setStore} 
+              showNotification={showNotification} 
+              isArabic={isArabic} 
+            />
+          )}
+
+          {activeModule === 'receipt_designer' && (
+            <ReceiptDesigner 
+              store={store} 
               showNotification={showNotification} 
               isArabic={isArabic} 
             />
