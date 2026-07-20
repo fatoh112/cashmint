@@ -130,10 +130,10 @@ export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTarget
       hexString += rasterBytes[i].toString(16).padStart(2, '0');
     }
 
-    console.log(`🖨️ [PRINTER-SERVICE] Monochrome logo converted (${width}x${height}px, ${hexString.length / 2} bytes)`);
+    console.log(`[LOGO DEBUG] image data length: ${hexString.length / 2} bytes (${width}x${height}px)`);
     return `<image width="${width}" height="${height}" align="${align}" color="color_1">${hexString.toUpperCase()}</image>&#10;`;
   } catch (err) {
-    console.warn("🖨️ [PRINTER-SERVICE] Logo conversion for Epson XML failed:", err.message);
+    console.warn("[LOGO DEBUG] Logo conversion for Epson XML failed:", err.message);
     return '';
   }
 }
@@ -146,6 +146,9 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
   const config = mergeAndEnforceReceiptConfig(options.templateConfig || {}, outputType);
   const store = normalizeStoreInfo(storeInput, config);
   const isKitchen = outputType === 'kitchen_ticket';
+
+  console.log("[LOGO DEBUG] logo URL value:", store.logo_url || '(none)');
+  console.log("[LOGO DEBUG] logo conversion called or not:", Boolean(config.header?.show_logo && store.logo_url && !isKitchen));
 
   const width = config.paper_width === 58 ? 30 : 40;
   const sepChar = config.styles?.divider_style === 'double' ? '=' : '-';
@@ -801,6 +804,8 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
   } else {
     xmlContent = await buildReceiptXML(order, storeInput, options);
   }
+
+  console.log("[LOGO DEBUG] generated XML contains image tag or not:", xmlContent.includes('<image'));
 
   const soapPayload = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">

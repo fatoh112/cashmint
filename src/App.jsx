@@ -593,7 +593,12 @@ export default function App() {
       .then(async () => {
         const autoPrintMaster = localStorage.getItem('auto_print_enabled') !== 'false';
         const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
-        console.log("🖨️ [AUTO-PRINT] Settings check - Master Enabled:", autoPrintMaster, "| Printer IP:", localPrinterIP);
+
+        const autoPrintCashier = localStorage.getItem('auto_print_cashier') !== 'false';
+        const autoPrintCustomer = localStorage.getItem('auto_print_customer') === 'true';
+        const autoPrintKitchen = localStorage.getItem('auto_print_kitchen') !== 'false';
+
+        console.log("[CASH PRINT DEBUG] print settings status - Master:", autoPrintMaster, "| IP:", localPrinterIP, "| Cashier:", autoPrintCashier, "| Customer:", autoPrintCustomer, "| Kitchen:", autoPrintKitchen);
 
         if (!localPrinterIP || !autoPrintMaster) {
           console.warn("🖨️ [AUTO-PRINT] Skipping print: Master toggle disabled or Printer IP missing.");
@@ -604,12 +609,6 @@ export default function App() {
           console.log("🖨️ [AUTO-PRINT] Order already printed previously:", order.id);
           return { success: true, skipped: true, alreadyPrinted: true };
         }
-
-        const autoPrintCashier = localStorage.getItem('auto_print_cashier') !== 'false';
-        const autoPrintCustomer = localStorage.getItem('auto_print_customer') === 'true';
-        const autoPrintKitchen = localStorage.getItem('auto_print_kitchen') !== 'false';
-
-        console.log("🖨️ [AUTO-PRINT] Output toggles - Cashier:", autoPrintCashier, "| Customer:", autoPrintCustomer, "| Kitchen:", autoPrintKitchen);
 
         const enabledOutputs = [];
         if (autoPrintCashier) enabledOutputs.push('pos_receipt');
@@ -656,7 +655,7 @@ export default function App() {
               skipFallback: true,
               isArabic
             });
-            console.log(`🖨️ [AUTO-PRINT] Attempt ${attempt} result for ${outputType}:`, jobRes);
+            console.log("[CASH PRINT DEBUG] printer response for", outputType, ":", jobRes);
             if (jobRes.success) break;
             if (attempt < 3) {
               await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1740,6 +1739,7 @@ export default function App() {
       return;
     }
     checkoutInFlightRef.current = true;
+    console.log("[CASH PRINT DEBUG] checkout started. Payment method:", paymentMethod);
 
     try {
       showNotification(isArabic ? "جاري إرسال الطلب..." : "Submitting order...", "info");
@@ -1773,6 +1773,8 @@ export default function App() {
       if (orderErr) throw orderErr;
       const createdOrder = Array.isArray(orderData) ? orderData[0] : orderData;
       if (!createdOrder?.id) throw new Error('The order was not returned by the accounting checkout.');
+
+      console.log("[CASH PRINT DEBUG] order created. Order ID:", createdOrder.id, "Total:", createdOrder.total_amount);
 
       // Update cashier session totals for cash orders
       if (paymentMethod === 'cash') {
@@ -1866,7 +1868,7 @@ export default function App() {
       } else {
         // Cash / Direct payment completed
         setLastCompletedOrder(createdOrder);
-        console.log("🖨️ [CHECKOUT] Cash payment completed. Invoking auto print for order:", createdOrder.id);
+        console.log("[CASH PRINT DEBUG] enqueueAutoReceiptPrint called. Order ID:", createdOrder.id);
         enqueueAutoReceiptPrint(createdOrder);
 
         if (orderCompleteSoundEnabled) playChime();
