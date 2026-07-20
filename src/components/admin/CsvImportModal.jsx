@@ -496,11 +496,11 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl max-w-4xl w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[85vh] text-right" dir={isArabic ? 'rtl' : 'ltr'}>
+      <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-4xl w-full shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden flex flex-col max-h-[85vh] text-right" dir={isArabic ? 'rtl' : 'ltr'}>
         
         {/* Header */}
-        <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-          <h3 className="font-bold text-sm text-slate-850 flex items-center gap-2">
+        <div className="p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
+          <h3 className="font-bold text-sm text-slate-850 dark:text-white flex items-center gap-2">
             <FileSpreadsheet className="w-4 h-4 text-indigo-500" />
             <span>{isArabic ? "استيراد قائمة الطعام من ملف CSV" : "Import Menu from CSV"}</span>
           </h3>
@@ -512,7 +512,7 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
                 onClose();
               }
             }} 
-            className="text-slate-450 hover:text-slate-850"
+            className="text-slate-450 hover:text-slate-850 dark:hover:text-white"
           >
             <X className="w-4 h-4" />
           </button>
@@ -521,18 +521,18 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
         {/* Content */}
         <div className="p-5 space-y-4 overflow-y-auto flex-1">
           {/* Instructions and Download Template */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-indigo-50/30 border border-indigo-100/30 rounded-2xl text-xs">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-indigo-50/30 dark:bg-indigo-950/30 border border-indigo-100/30 dark:border-indigo-800/30 rounded-2xl text-xs">
             <div className="space-y-1">
-              <p className="font-bold text-slate-800">
+              <p className="font-bold text-slate-800 dark:text-slate-200">
                 {isArabic ? "تأكد من مطابقة ملف CSV للأعمدة التالية (بما في ذلك المجموعات والإضافات الاختيارية):" : "Make sure your CSV matches the required columns (including optional option groups & modifiers):"}
               </p>
-              <code className="text-indigo-600 font-mono font-bold block whitespace-pre-wrap">
+              <code className="text-indigo-600 dark:text-indigo-400 font-mono font-bold block whitespace-pre-wrap">
                 category_name, product_name, price, group_name, modifier_name, modifier_price
               </code>
             </div>
             <button
               onClick={downloadSampleCSV}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 rounded-xl hover:bg-indigo-50 font-bold transition-all shrink-0 active:scale-95"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-slate-800 border border-indigo-200 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 rounded-xl hover:bg-indigo-50 dark:hover:bg-indigo-950/50 font-bold transition-all shrink-0 active:scale-95"
             >
               <Download className="w-3.5 h-3.5" />
               <span>{isArabic ? "تحميل نموذج ملف CSV" : "Download CSV Template"}</span>
@@ -556,10 +556,10 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
               }}
               className={`border-2 border-dashed rounded-2xl p-8 text-center transition-all cursor-pointer ${
                 isDragActive 
-                  ? 'border-indigo-500 bg-indigo-50/20' 
+                  ? 'border-indigo-500 bg-indigo-50/20 dark:bg-indigo-950/40' 
                   : fileName 
-                  ? 'border-emerald-500 bg-emerald-50/10' 
-                  : 'border-slate-200 hover:border-slate-350 bg-slate-50/50'
+                  ? 'border-emerald-500 bg-emerald-50/10 dark:bg-emerald-950/30' 
+                  : 'border-slate-200 dark:border-slate-700 hover:border-slate-350 bg-slate-50/50 dark:bg-slate-900/40'
               }`}
               onClick={() => fileInputRef.current?.click()}
             >
@@ -573,12 +573,12 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
               />
               
               <div className="space-y-2 flex flex-col items-center">
-                <div className="p-3 bg-indigo-50 text-indigo-500 rounded-full">
+                <div className="p-3 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-500 rounded-full">
                   <Upload className="w-5 h-5" />
                 </div>
                 
                 <div>
-                  <p className="text-xs font-bold text-slate-700">
+                  <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
                     {isArabic ? "اسحب وأفلت ملف الـ CSV هنا أو تصفح ملفاتك" : "Drag & drop CSV file here or browse"}
                   </p>
                   <p className="text-[9px] text-slate-400 font-bold mt-1">
@@ -594,11 +594,11 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold text-slate-500">
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
                     {isArabic ? `معاينة البيانات (${parsedRows.length} صف)` : `Data Preview (${parsedRows.length} rows)`}
                   </span>
                   {parsedRows.some(r => !r.isValid) && (
-                    <span className="bg-red-100 text-red-700 text-[9px] px-2 py-0.5 rounded-full font-bold">
+                    <span className="bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-[9px] px-2 py-0.5 rounded-full font-bold">
                       {isArabic 
                         ? `سيتم تجاهل ${parsedRows.filter(r => !r.isValid).length} صف غير صالح` 
                         : `${parsedRows.filter(r => !r.isValid).length} invalid rows will be ignored`}
@@ -610,15 +610,15 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
                     setFileName('');
                     setParsedRows([]);
                   }}
-                  className="text-red-550 hover:text-red-655 text-[10px] font-bold transition-all"
+                  className="text-red-550 dark:text-red-400 hover:text-red-655 text-[10px] font-bold transition-all"
                 >
                   {isArabic ? "حذف الملف الحالي" : "Clear File"}
                 </button>
               </div>
 
-              <div className="border border-slate-100 rounded-xl overflow-hidden max-h-[40vh] overflow-y-auto">
+              <div className="border border-slate-100 dark:border-slate-700 rounded-xl overflow-hidden max-h-[40vh] overflow-y-auto">
                 <table className="w-full text-right text-xs" dir={isArabic ? 'rtl' : 'ltr'}>
-                  <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-100 sticky top-0">
+                  <thead className="bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-bold border-b border-slate-100 dark:border-slate-700 sticky top-0">
                     <tr>
                       <th className="p-2.5 text-right">{isArabic ? "التصنيف" : "Category"}</th>
                       <th className="p-2.5 text-right">{isArabic ? "اسم المنتج" : "Product"}</th>
@@ -628,9 +628,9 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
                       <th className="p-2.5 text-center">{isArabic ? "سعر الإضافة" : "Mod. Price"}</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700 font-medium text-slate-700 dark:text-slate-200">
                     {parsedRows.map((row) => (
-                      <tr key={row.id} className={`hover:bg-slate-50/55 ${!row.isValid ? 'bg-red-50/40 text-red-700' : ''}`}>
+                      <tr key={row.id} className={`hover:bg-slate-50/55 dark:hover:bg-slate-750/50 ${!row.isValid ? 'bg-red-50/40 dark:bg-red-950/30 text-red-700 dark:text-red-300' : ''}`}>
                         <td className="p-2.5 font-medium">{row.category_name}</td>
                         <td className="p-2.5 font-medium">
                           <div>
@@ -649,9 +649,9 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
                             <span className="text-red-500">{isArabic ? "غير صالح" : "Invalid"}</span>
                           )}
                         </td>
-                        <td className="p-2.5 font-medium text-slate-500">{row.group_name || '-'}</td>
-                        <td className="p-2.5 font-medium text-slate-500">{row.modifier_name || '-'}</td>
-                        <td className="p-2.5 text-center font-mono text-slate-500">
+                        <td className="p-2.5 font-medium text-slate-500 dark:text-slate-400">{row.group_name || '-'}</td>
+                        <td className="p-2.5 font-medium text-slate-500 dark:text-slate-400">{row.modifier_name || '-'}</td>
+                        <td className="p-2.5 text-center font-mono text-slate-500 dark:text-slate-400">
                           {row.modifier_name ? row.modifier_price.toFixed(2) : '-'}
                         </td>
                       </tr>
@@ -664,11 +664,11 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
         </div>
 
         {/* Footer */}
-        <div className="p-5 border-t border-slate-100 bg-slate-50 flex gap-2">
+        <div className="p-5 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex gap-2">
           <button
             onClick={handleImportSubmit}
             disabled={importing || parsedRows.length === 0}
-            className="flex-1 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] disabled:bg-indigo-300 disabled:scale-100 text-white font-bold text-xs py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"
+            className="flex-1 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] disabled:bg-indigo-300 dark:disabled:bg-indigo-900/50 dark:disabled:text-indigo-400 disabled:scale-100 text-white font-bold text-xs py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"
           >
             {importing ? (
               <>
@@ -686,7 +686,7 @@ export default function CsvImportModal({ isOpen, onClose, store, showNotificatio
               onClose();
             }}
             disabled={importing}
-            className="px-4 border border-slate-200 bg-white text-slate-600 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 transition-all"
+            className="px-4 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
           >
             {isArabic ? "إلغاء" : "Cancel"}
           </button>

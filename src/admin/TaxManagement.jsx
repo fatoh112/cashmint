@@ -186,11 +186,11 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
     }
   };
 
-  const selectClass = 'w-full mt-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5 text-xs font-semibold';
+  const selectClass = 'w-full mt-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white px-3 py-2.5 text-xs font-semibold focus:outline-none focus:border-amber-500';
   const Modal = ({ children, close }) => (
     <div className="fixed inset-0 z-[70] bg-slate-950/45 flex items-center justify-center p-4 backdrop-blur-sm">
       <div dir={isArabic ? 'rtl' : 'ltr'} className="max-w-lg w-full max-h-[90vh] overflow-y-auto rounded-3xl bg-white dark:bg-slate-800 shadow-2xl border border-slate-200 dark:border-slate-700">
-        <div className="p-5 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center">
+        <div className="p-5 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center text-slate-800 dark:text-white">
           <b>{t('المجموعات المحاسبية', 'Accounting Groups')}</b>
           <button onClick={close} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><X className="w-5 h-5" /></button>
         </div>
@@ -204,10 +204,10 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
       <div className="flex flex-col sm:flex-row justify-between gap-3 sm:items-center">
         <div>
           <h2 className="text-xl font-black text-slate-800 dark:text-white">{t('المجموعات المحاسبية', 'Accounting Groups')}</h2>
-          <p className="text-xs text-slate-500 mt-1">{t('اختر اسم المجموعة، ونسب ضريبة الصالة والسفري (21%، 12%، 6%، 0%).', 'Specify group name, and fixed Dine-in / Takeaway VAT rates (21%, 12%, 6%, 0%).')}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t('اختر اسم المجموعة، ونسب ضريبة الصالة والسفري (21%، 12%، 6%، 0%).', 'Specify group name, and fixed Dine-in / Takeaway VAT rates (21%, 12%, 6%, 0%).')}</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setProfilesOpen(true)} className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold flex items-center gap-2">
+          <button onClick={() => setProfilesOpen(true)} className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-bold flex items-center gap-2 transition-all">
             <Settings2 className="w-4 h-4" />{t('إدارة ملفات الضريبة', 'Manage Tax Profiles')}
           </button>
           <button onClick={() => setGroupEditor(blankGroup)} className="px-4 py-2.5 rounded-xl bg-amber-500 text-white text-xs font-bold flex items-center gap-2">
@@ -222,7 +222,7 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
 
       <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500">
+          <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400">
             <tr>
               <th className="p-4 text-start">{t('اسم المجموعة', 'Accounting Group')}</th>
               <th className="p-4 text-start">{t('المعرّف المحاسبي', 'Accounting ID')}</th>
@@ -232,7 +232,7 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
               <th className="p-4 text-end">{t('إجراءات', 'Actions')}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-700 text-slate-700 dark:text-slate-200">
             {groups.map(group => {
               const configured = groupConfigured(group);
               const assignedProdCount = countProducts(group.id);
@@ -240,28 +240,28 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
 
               return (
                 <tr key={group.id}>
-                  <td className="p-4 font-bold">
+                  <td className="p-4 font-bold text-slate-800 dark:text-white">
                     {group.name === 'Soft Drinks' ? t('المشروبات غير الكحولية', 'Non-Alcoholic Drinks') : group.name}
                   </td>
-                  <td className="p-4 text-slate-500">{group.accounting_code || '—'}</td>
+                  <td className="p-4 text-slate-500 dark:text-slate-400">{group.accounting_code || '—'}</td>
                   <td className="p-4">
-                    <span className={configured ? 'text-emerald-600 font-bold' : 'text-amber-600 font-bold'}>
+                    <span className={configured ? 'text-emerald-600 dark:text-emerald-400 font-bold' : 'text-amber-600 dark:text-amber-400 font-bold'}>
                       {configured ? profileSummary(profileById[group.tax_profile_id]) : t('يحتاج إعداد الضريبة', 'Needs tax configuration')}
                     </span>
                   </td>
                   <td className="p-4 text-center">
-                    <span className={`px-2 py-1 rounded-md font-bold ${assignedProdCount > 0 ? 'bg-amber-50 text-amber-800' : 'bg-slate-50 text-slate-500'}`}>
+                    <span className={`px-2 py-1 rounded-md font-bold ${assignedProdCount > 0 ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300' : 'bg-slate-50 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}>
                       {assignedProdCount}
                     </span>
                   </td>
                   <td className="p-4 text-center">
-                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${group.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                    <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${group.is_active ? 'bg-emerald-100 dark:bg-emerald-955/30 text-emerald-700 dark:text-emerald-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400'}`}>
                       {group.is_active ? t('نشطة', 'Active') : t('موقفة', 'Inactive')}
                     </span>
                   </td>
                   <td className="p-4">
                     <div className="flex justify-end gap-2">
-                      <button title={t('مراجعة المنتجات', 'Review products')} onClick={() => setReviewGroup(group)} className="p-2 rounded-lg hover:bg-slate-100">
+                      <button title={t('مراجعة المنتجات', 'Review products')} onClick={() => setReviewGroup(group)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">
                         <Eye className="w-4 h-4" />
                       </button>
                       <button title={t('تعديل', 'Edit')} onClick={() => {
@@ -273,7 +273,7 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
                           dine_in_rate: String(dineInRate),
                           takeaway_rate: String(takeawayRate)
                         });
-                      }} className="p-2 rounded-lg hover:bg-slate-100">
+                      }} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400">
                         <Edit2 className="w-4 h-4" />
                       </button>
                       <button onClick={() => toggleGroup(group)} className="text-[10px] font-bold text-amber-600">

@@ -490,10 +490,10 @@ export default function IntegrationSettings({ store, setStore, showNotification,
       
       {/* Title */}
       <div>
-        <h2 className="text-xl font-extrabold text-slate-800">
+        <h2 className="text-xl font-extrabold text-slate-800 dark:text-white">
           {isArabic ? "ربط وإعدادات الأجهزة" : "Integration & Hardware Settings"}
         </h2>
-        <p className="text-xs text-slate-400 mt-1">
+        <p className="text-xs text-slate-400 dark:text-slate-400 mt-1">
           {isArabic ? "تكوين الطابعة المحلية وربط الطلبات السحابية عبر HubRise" : "Configure local printer hardware and sync cloud orders with HubRise"}
         </p>
       </div>
@@ -501,19 +501,19 @@ export default function IntegrationSettings({ store, setStore, showNotification,
       <form onSubmit={handleSaveSettings} className="grid grid-cols-1 md:grid-cols-2 gap-6">
         
         {/* LOCAL PRINTER HARDWARE */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
-          <div className="flex items-center gap-3 border-b border-slate-50 pb-3 text-slate-855">
-            <div className="p-2 bg-amber-50 rounded-xl text-amber-500">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm p-6 space-y-4">
+          <div className="flex items-center gap-3 border-b border-slate-50 dark:border-slate-700 pb-3 text-slate-855 dark:text-white">
+            <div className="p-2 bg-amber-50 dark:bg-amber-955/20 rounded-xl text-amber-500">
               <Printer className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm">{isArabic ? "طابعة الفواتير" : "Receipt Printer"}</h3>
-              <p className="text-[10px] text-slate-400 font-bold">Epson TM-T20IV (ePOS XML / HTTP POST)</p>
+              <h3 className="font-extrabold text-sm text-slate-800 dark:text-white">{isArabic ? "طابعة الفواتير" : "Receipt Printer"}</h3>
+              <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold">Epson TM-T20IV (ePOS XML / HTTP POST)</p>
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-slate-500 block">
+            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
               {isArabic ? "عنوان IP المحلي للطابعة (Printer IP Address)" : "Local Printer IP"}
             </label>
             <input
@@ -521,9 +521,9 @@ export default function IntegrationSettings({ store, setStore, showNotification,
               value={printerIP}
               onChange={(e) => setPrinterIP(e.target.value)}
               placeholder="مثال: 192.168.1.100"
-              className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
             />
-            <span className="text-[9px] text-slate-400 font-bold block leading-relaxed">
+            <span className="text-[9px] text-slate-400 dark:text-slate-400 font-bold block leading-relaxed">
               * تأكد من اتصال جهاز التابلت والطابعة بنفس شبكة الواي فاي المحلية.
             </span>
           </div>
@@ -532,7 +532,7 @@ export default function IntegrationSettings({ store, setStore, showNotification,
             type="button"
             onClick={handleTestPrint}
             disabled={testingPrinter}
-            className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-xs active:scale-[0.99] transition-all flex items-center justify-center gap-2"
           >
             {testingPrinter ? (
               <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
@@ -543,20 +543,20 @@ export default function IntegrationSettings({ store, setStore, showNotification,
         </div>
 
         {/* HUBRISE API INTEGRATION */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
-          <div className="flex items-center gap-3 border-b border-slate-50 pb-3 text-slate-855">
-            <div className="p-2 bg-sky-50 rounded-xl text-sky-500">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm p-6 space-y-4">
+          <div className="flex items-center gap-3 border-b border-slate-50 dark:border-slate-700 pb-3 text-slate-855 dark:text-white">
+            <div className="p-2 bg-sky-50 dark:bg-sky-955/20 rounded-xl text-sky-500">
               <Globe className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm">{isArabic ? "ربط منصة HubRise" : "HubRise API Bridge"}</h3>
-              <p className="text-[10px] text-slate-400 font-bold">Cloud Webhooks & Order Sync</p>
+              <h3 className="font-extrabold text-sm text-slate-800 dark:text-white">{isArabic ? "ربط منصة HubRise" : "HubRise API Bridge"}</h3>
+              <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold">Cloud Webhooks & Order Sync</p>
             </div>
           </div>
 
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-500 block">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
                 {isArabic ? "معرف موقع HubRise (Location ID)" : "HubRise Location ID"}
               </label>
               <input
@@ -564,12 +564,12 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                 value={hubriseLocId}
                 onChange={(e) => setHubriseLocId(e.target.value)}
                 placeholder="مثال: hr_loc_a2b3"
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
               />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-500 block">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
                 {isArabic ? "مفتاح واجهة البرمجة (HubRise API Access Token)" : "HubRise API Access Token"}
               </label>
               <input
@@ -577,15 +577,15 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                 value={hubriseApiKey}
                 onChange={(e) => setHubriseApiKey(e.target.value)}
                 placeholder="••••••••••••••••••••••••"
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
               />
             </div>
 
-            <div className="p-3.5 bg-sky-50/50 rounded-xl border border-sky-100/50 flex items-start gap-2.5">
-              <AlertCircle className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
-              <p className="text-[10px] text-sky-850 font-bold leading-normal">
+            <div className="p-3.5 bg-sky-50/50 dark:bg-sky-955/30 rounded-xl border border-sky-100/50 dark:border-sky-900/30 flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
+              <p className="text-[10px] text-sky-850 dark:text-sky-200 font-bold leading-normal">
                 عنوان Webhook لتلقي الطلبات الخارجية: <br />
-                <code className="bg-white/80 px-1 py-0.5 rounded font-mono text-[9px] mt-1 select-all inline-block text-slate-700">
+                <code className="bg-white/80 dark:bg-slate-900 px-1 py-0.5 rounded font-mono text-[9px] mt-1 select-all inline-block text-slate-700 dark:text-slate-200">
                   https://pnffzpewnxeahspxofxo.supabase.co/functions/v1/hubrise-webhook
                 </code>
               </p>
@@ -594,20 +594,20 @@ export default function IntegrationSettings({ store, setStore, showNotification,
         </div>
 
         {/* LEGACY MANUAL STRIPE CONFIGURATION (temporary testing rollback) */}
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
-          <div className="flex items-center gap-3 border-b border-slate-50 pb-3 text-slate-855">
-            <div className="p-2 bg-emerald-50 rounded-xl text-emerald-500">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm p-6 space-y-4">
+          <div className="flex items-center gap-3 border-b border-slate-50 dark:border-slate-700 pb-3 text-slate-855 dark:text-white">
+            <div className="p-2 bg-emerald-50 dark:bg-emerald-955/20 rounded-xl text-emerald-500">
               <CreditCard className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm">{isArabic ? "إعداد Stripe الآمن" : "Secure Stripe Configuration"}</h3>
-              <p className="text-[10px] text-slate-400 font-bold">Stripe Terminal / BBPOS WisePad 3</p>
+              <h3 className="font-extrabold text-sm text-slate-800 dark:text-white">{isArabic ? "إعداد Stripe الآمن" : "Secure Stripe Configuration"}</h3>
+              <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold">Stripe Terminal / BBPOS WisePad 3</p>
             </div>
           </div>
 
           <div className="space-y-3 text-right">
-            <p className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[10px] font-semibold text-emerald-800">{isArabic ? 'يتم حفظ مفاتيح Stripe وأسرار Webhook في Supabase فقط، وليس في المتصفح أو تطبيق Android.' : 'Stripe secret keys and webhook secrets are stored only in Supabase secrets, never in this browser or the Android APK.'}</p>
-            <button type="button" onClick={handleClearStripeSettings} className="w-full py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-xl">{isArabic ? 'مسح أي إعدادات Stripe قديمة من هذا الجهاز' : 'Clear any legacy local Stripe settings'}</button>
+            <p className="rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-955/30 p-3 text-[10px] font-semibold text-emerald-800 dark:text-emerald-300">{isArabic ? 'يتم حفظ مفاتيح Stripe وأسرار Webhook في Supabase فقط، وليس في المتصفح أو تطبيق Android.' : 'Stripe secret keys and webhook secrets are stored only in Supabase secrets, never in this browser or the Android APK.'}</p>
+            <button type="button" onClick={handleClearStripeSettings} className="w-full py-2 text-xs font-bold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl">{isArabic ? 'مسح أي إعدادات Stripe قديمة من هذا الجهاز' : 'Clear any legacy local Stripe settings'}</button>
           </div>
         </div>
 
@@ -840,8 +840,8 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                               onClick={() => handleToggleDeviceStatus(device.id, device.status)}
                               className={`p-1.5 rounded-lg border transition-all active:scale-95 cursor-pointer ${
                                 device.status === 'active'
-                                  ? 'border-amber-200 hover:bg-amber-50 dark:border-amber-900/40 text-amber-600'
-                                  : 'border-emerald-200 hover:bg-emerald-50 dark:border-emerald-900/40 text-emerald-500'
+                                  ? 'border-amber-200 hover:bg-amber-50 dark:border-amber-900/40 dark:hover:bg-amber-950/40 text-amber-600 dark:text-amber-400'
+                                  : 'border-emerald-200 hover:bg-emerald-50 dark:border-emerald-900/40 dark:hover:bg-emerald-950/40 text-emerald-500 dark:text-emerald-400'
                               }`}
                               title={device.status === 'active' ? (isArabic ? "تعطيل مؤقت" : "Disable Device") : (isArabic ? "تفعيل الجهاز" : "Enable Device")}
                             >
@@ -851,7 +851,7 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                             <button
                               type="button"
                               onClick={() => handleRevokeDevice(device.id)}
-                              className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 text-rose-500 transition-all active:scale-95 cursor-pointer"
+                              className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 dark:hover:bg-rose-950/40 text-rose-500 dark:text-rose-400 transition-all active:scale-95 cursor-pointer"
                               title={isArabic ? "إلغاء التفعيل نهائياً (Revoke)" : "Revoke Device"}
                             >
                               <ShieldAlert className="w-3.5 h-3.5" />

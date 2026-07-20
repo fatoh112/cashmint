@@ -514,22 +514,22 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     <div className="space-y-6">
       
       {/* Module Title & Tabs */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
         <div>
-          <h2 className="text-xl font-extrabold text-slate-800">
+          <h2 className="text-xl font-extrabold text-slate-800 dark:text-white">
             {isArabic ? "إدارة الكتالوج والمنيو" : "Catalog & Menu Management"}
           </h2>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="text-xs text-slate-400 dark:text-slate-400 mt-1">
             {isArabic ? "إضافة وتعديل الفئات، المنتجات، والإضافات للمطعم" : "Add or edit categories, products, and add-ons for your store"}
           </p>
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex bg-slate-100 p-1 rounded-xl shrink-0">
+        <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl shrink-0">
           <button
             onClick={() => setActiveTab('products')}
             className={`px-4 py-2 rounded-lg font-bold text-xs transition-all ${
-              activeTab === 'products' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-850'
+              activeTab === 'products' ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-850 dark:hover:text-white'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -541,7 +541,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
           <button
             onClick={() => setActiveTab('categories')}
             className={`px-4 py-2 rounded-lg font-bold text-xs transition-all ${
-              activeTab === 'categories' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-850'
+              activeTab === 'categories' ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-850 dark:hover:text-white'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -553,7 +553,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
           <button
             onClick={() => setActiveTab('modifiers')}
             className={`px-4 py-2 rounded-lg font-bold text-xs transition-all ${
-              activeTab === 'modifiers' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-850'
+              activeTab === 'modifiers' ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-850 dark:hover:text-white'
             }`}
           >
             <div className="flex items-center gap-2">
@@ -567,15 +567,15 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 gap-3">
           <div className="w-8 h-8 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin" />
-          <p className="text-xs font-semibold text-slate-400">{isArabic ? "جاري التحميل..." : "Loading catalog..."}</p>
+          <p className="text-xs font-semibold text-slate-400 dark:text-slate-400">{isArabic ? "جاري التحميل..." : "Loading catalog..."}</p>
         </div>
       ) : (
         <>
           {/* --- PRODUCTS TAB --- */}
           {activeTab === 'products' && (
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <span className="font-extrabold text-sm text-slate-700">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm overflow-hidden">
+              <div className="p-5 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+                <span className="font-extrabold text-sm text-slate-700 dark:text-slate-200">
                   {isArabic ? `المنتجات المتوفرة (${products.length})` : `Products List (${products.length})`}
                 </span>
                 <button
@@ -592,21 +592,21 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 </button>
               </div>
 
-              <div className="p-4 border-b border-slate-100 bg-white space-y-3">
-                <input value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder={isArabic ? 'ابحث بالاسم أو SKU أو السعر...' : 'Search by name, SKU or price...'} className="w-full rounded-xl border border-slate-200 px-4 py-3 text-xs font-semibold focus:outline-none focus:border-amber-500" />
+              <div className="p-4 border-b border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 space-y-3">
+                <input value={itemSearch} onChange={(e) => setItemSearch(e.target.value)} placeholder={isArabic ? 'ابحث بالاسم أو SKU أو السعر...' : 'Search by name, SKU or price...'} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-white px-4 py-3 text-xs font-semibold focus:outline-none focus:border-amber-500" />
                 <div className="flex flex-wrap gap-2">
-                  <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل الفئات' : 'All categories'}</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
-                  <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل المجموعات الحسابية' : 'All accounting groups'}</option>{selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select>
+                  <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل الفئات' : 'All categories'}</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+                  <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل المجموعات الحسابية' : 'All accounting groups'}</option>{selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select>
                   {selectedProductIds.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50/90 border border-amber-200 p-2 shadow-sm">
-                      <span className="px-2.5 py-1 text-xs font-black text-amber-900 bg-amber-200/60 rounded-lg">
+                    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 p-2 shadow-sm">
+                      <span className="px-2.5 py-1 text-xs font-black text-amber-900 dark:text-amber-300 bg-amber-200/60 dark:bg-amber-900/60 rounded-lg">
                         {selectedProductIds.length} {isArabic ? 'محدد' : 'selected'}
                       </span>
                       
                       <select
                         value={bulkCategoryId}
                         onChange={(e) => setBulkCategoryId(e.target.value)}
-                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-amber-500"
+                        className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:border-amber-500"
                       >
                         <option value="">{isArabic ? '— تغيير الفئة —' : '— Change category —'}</option>
                         {categories.map(category => (
@@ -617,7 +617,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       <select
                         value={bulkGroupId}
                         onChange={(e) => setBulkGroupId(e.target.value)}
-                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-amber-500"
+                        className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:border-amber-500"
                       >
                         <option value="">{isArabic ? '— تعيين مجموعة —' : '— Assign group —'}</option>
                         {selectableAccountingGroups.map(group => (
@@ -639,7 +639,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
               <div className="overflow-x-auto">
                 <table className="w-full text-right text-xs">
-                  <thead className="bg-slate-50 text-slate-400 font-bold border-b border-slate-150 uppercase">
+                  <thead className="bg-slate-50 dark:bg-slate-900/80 text-slate-400 font-bold border-b border-slate-150 dark:border-slate-700 uppercase">
                     <tr>
                       <th className="p-4 w-10"><input type="checkbox" checked={visibleProducts.length > 0 && visibleProducts.every(product => selectedProductIds.includes(product.id))} onChange={toggleVisibleProducts} /></th>
                       <th className="p-4">{isArabic ? "اسم المنتج" : "Name"}</th>
@@ -649,30 +649,30 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       <th className="p-4 text-center">{isArabic ? "إجراءات" : "Actions"}</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700 font-medium text-slate-700 dark:text-slate-200">
                     {visibleProducts.map(product => {
                       const categoryName = categories.find(c => c.id === product.category_id)?.name || '-';
                       const assignedGroup = accountingGroups.find(group => group.id === product.accounting_group_id);
                       const needsConfig = !assignedGroup || assignedGroup.name === 'Other' || assignedGroup.name === 'Unassigned / Legacy';
 
                       return (
-                        <tr key={product.id} className="hover:bg-slate-50/55 transition-all">
+                        <tr key={product.id} className="hover:bg-slate-50/55 dark:hover:bg-slate-750/50 transition-all">
                           <td className="p-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProductSelection(product.id)} /></td>
                           <td className="p-4">
-                            <div className="font-bold text-slate-800">{product.name}</div>
+                            <div className="font-bold text-slate-800 dark:text-white">{product.name}</div>
                             {product.name_ar && (
                               <div className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">{product.name_ar}</div>
                             )}
                           </td>
-                          <td className="p-4 text-slate-500">{categoryName}</td>
-                          <td className="p-4 font-black">{parseFloat(product.price).toFixed(2)} €</td>
+                          <td className="p-4 text-slate-500 dark:text-slate-400">{categoryName}</td>
+                          <td className="p-4 font-black text-slate-800 dark:text-white">{parseFloat(product.price).toFixed(2)} €</td>
                           <td className="p-4">
                             {needsConfig ? (
                               <span className="inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
                                 {isArabic ? 'يحتاج إعداد الضريبة' : 'Needs configuration'}
                               </span>
                             ) : (
-                              <span className="text-slate-600 font-semibold">{accountingGroupLabel(assignedGroup)}</span>
+                              <span className="text-slate-600 dark:text-slate-200 font-semibold">{accountingGroupLabel(assignedGroup)}</span>
                             )}
                           </td>
                           <td className="p-4">
@@ -712,13 +712,13 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                   }
                                   setProductModalOpen(true);
                                 }}
-                                className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600 flex items-center justify-center transition-all"
+                                className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-all"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteProduct(product.id)}
-                                className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-rose-50 hover:text-rose-600 flex items-center justify-center transition-all"
+                                className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-600 dark:hover:text-rose-400 flex items-center justify-center transition-all"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -735,9 +735,9 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
           {/* --- CATEGORIES TAB --- */}
           {activeTab === 'categories' && (
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <span className="font-extrabold text-sm text-slate-700">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm overflow-hidden">
+              <div className="p-5 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+                <span className="font-extrabold text-sm text-slate-700 dark:text-slate-200">
                   {isArabic ? `فئات المنيو (${categories.length})` : `Categories (${categories.length})`}
                 </span>
                 <button
@@ -756,23 +756,23 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
               <div className="overflow-x-auto">
                 <table className="w-full text-right text-xs">
-                  <thead className="bg-slate-50 text-slate-400 font-bold border-b border-slate-150 uppercase">
+                  <thead className="bg-slate-50 dark:bg-slate-900/80 text-slate-400 dark:text-slate-400 font-bold border-b border-slate-150 dark:border-slate-700 uppercase">
                     <tr>
                       <th className="p-4">{isArabic ? "اسم الفئة" : "Category Name"}</th>
                       <th className="p-4">{isArabic ? "تاريخ الإنشاء" : "Created At"}</th>
                       <th className="p-4 text-center">{isArabic ? "إجراءات" : "Actions"}</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700 font-medium text-slate-700 dark:text-slate-200">
                     {categories.map(category => (
-                      <tr key={category.id} className="hover:bg-slate-50/55 transition-all">
+                      <tr key={category.id} className="hover:bg-slate-50/55 dark:hover:bg-slate-750/50 transition-all">
                         <td className="p-4">
-                          <div className="font-bold text-slate-800">{category.name}</div>
+                          <div className="font-bold text-slate-800 dark:text-white">{category.name}</div>
                           {category.name_ar && (
                             <div className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">{category.name_ar}</div>
                           )}
                         </td>
-                        <td className="p-4 text-slate-450">{new Date(category.created_at).toLocaleDateString()}</td>
+                        <td className="p-4 text-slate-450 dark:text-slate-400">{new Date(category.created_at).toLocaleDateString()}</td>
                         <td className="p-4">
                           <div className="flex justify-center gap-2.5">
                             <button
@@ -782,13 +782,13 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                 setCategoryNameAr(category.name_ar || '');
                                 setCategoryModalOpen(true);
                               }}
-                              className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600 flex items-center justify-center transition-all"
+                              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-all"
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => handleDeleteCategory(category.id)}
-                              className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-rose-50 hover:text-rose-600 flex items-center justify-center transition-all"
+                              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-600 dark:hover:text-rose-400 flex items-center justify-center transition-all"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -804,9 +804,9 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
           {/* --- MODIFIERS TAB --- */}
           {activeTab === 'modifiers' && (
-            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <span className="font-extrabold text-sm text-slate-700">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm overflow-hidden">
+              <div className="p-5 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+                <span className="font-extrabold text-sm text-slate-700 dark:text-slate-200">
                   {isArabic ? `خيارات الإضافات (${modifiers.length})` : `Modifiers List (${modifiers.length})`}
                 </span>
                 <button
@@ -824,7 +824,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
               <div className="overflow-x-auto">
                 <table className="w-full text-right text-xs">
-                  <thead className="bg-slate-50 text-slate-400 font-bold border-b border-slate-150 uppercase">
+                  <thead className="bg-slate-50 dark:bg-slate-900/80 text-slate-400 dark:text-slate-400 font-bold border-b border-slate-150 dark:border-slate-700 uppercase">
                     <tr>
                       <th className="p-4">{isArabic ? "اسم الإضافة" : "Modifier Name"}</th>
                       <th className="p-4">{isArabic ? "تابع لمنتج" : "Belongs to Product"}</th>
@@ -832,14 +832,14 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       <th className="p-4 text-center">{isArabic ? "إجراءات" : "Actions"}</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700 font-medium text-slate-700 dark:text-slate-200">
                     {modifiers.map(modifier => {
                       const prodName = products.find(p => p.id === modifier.product_id)?.name || '-';
                       return (
-                        <tr key={modifier.id} className="hover:bg-slate-50/55 transition-all">
-                          <td className="p-4 font-bold text-slate-800">{modifier.name}</td>
-                          <td className="p-4 text-slate-550">{prodName}</td>
-                          <td className="p-4 font-bold text-emerald-600">+{parseFloat(modifier.price_adjustment).toFixed(2)} €</td>
+                        <tr key={modifier.id} className="hover:bg-slate-50/55 dark:hover:bg-slate-750/50 transition-all">
+                          <td className="p-4 font-bold text-slate-800 dark:text-white">{modifier.name}</td>
+                          <td className="p-4 text-slate-550 dark:text-slate-400">{prodName}</td>
+                          <td className="p-4 font-bold text-emerald-600 dark:text-emerald-400">+{parseFloat(modifier.price_adjustment).toFixed(2)} €</td>
                           <td className="p-4">
                             <div className="flex justify-center gap-2.5">
                               <button
@@ -852,13 +852,13 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                   });
                                   setModifierModalOpen(true);
                                 }}
-                                className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600 flex items-center justify-center transition-all"
+                                className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 hover:text-amber-600 dark:hover:text-amber-400 flex items-center justify-center transition-all"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteModifier(modifier.id)}
-                                className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-rose-50 hover:text-rose-600 flex items-center justify-center transition-all"
+                                className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-600 dark:hover:text-rose-400 flex items-center justify-center transition-all"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -878,14 +878,14 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       {/* --- CATEGORY MODAL --- */}
       {categoryModalOpen && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-sm w-full shadow-2xl border border-slate-100 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-              <h3 className="font-bold text-sm text-slate-850">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-sm w-full shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
+              <h3 className="font-bold text-sm text-slate-850 dark:text-white">
                 {isArabic 
                   ? (editingCategory ? "تعديل الفئة" : "إضافة فئة جديدة") 
                   : (editingCategory ? "Edit Category" : "Add New Category")}
               </h3>
-              <button onClick={() => setCategoryModalOpen(false)} className="text-slate-450 hover:text-slate-850">✕</button>
+              <button onClick={() => setCategoryModalOpen(false)} className="text-slate-450 hover:text-slate-850 dark:hover:text-white">✕</button>
             </div>
             <form onSubmit={handleSaveCategory}>
               <div className="p-5 space-y-4 text-right">
@@ -896,7 +896,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     value={categoryName}
                     onChange={(e) => setCategoryName(e.target.value)}
                     placeholder="مثال: Beverages, Burgers"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                     required
                   />
                 </div>
@@ -908,11 +908,11 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     value={categoryNameAr}
                     onChange={(e) => setCategoryNameAr(e.target.value)}
                     placeholder="مثال: مشروبات، برجر"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
               </div>
-              <div className="p-5 border-t border-slate-100 bg-slate-50 flex gap-2">
+              <div className="p-5 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex gap-2">
                 <button
                   type="submit"
                   className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs py-2.5 rounded-xl transition-all"
@@ -922,7 +922,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 <button
                   type="button"
                   onClick={() => setCategoryModalOpen(false)}
-                  className="px-4 border border-slate-200 bg-white text-slate-600 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 transition-all"
+                  className="px-4 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
                 >
                   {isArabic ? "إلغاء" : "Cancel"}
                 </button>
@@ -935,14 +935,14 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       {/* --- PRODUCT MODAL --- */}
       {productModalOpen && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-xl w-full shadow-2xl border border-slate-100 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-              <h3 className="font-bold text-sm text-slate-850">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-xl w-full shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
+              <h3 className="font-bold text-sm text-slate-850 dark:text-white">
                 {isArabic 
                   ? (editingProduct ? "تعديل المنتج" : "إضافة منتج جديد") 
                   : (editingProduct ? "Edit Product" : "Add New Product")}
               </h3>
-              <button onClick={() => setProductModalOpen(false)} className="text-slate-450 hover:text-slate-850">✕</button>
+              <button onClick={() => setProductModalOpen(false)} className="text-slate-450 hover:text-slate-850 dark:hover:text-white">✕</button>
             </div>
             <form onSubmit={handleSaveProduct}>
               <div className="p-5 space-y-4 text-right">
@@ -954,7 +954,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       value={productForm.name}
                       onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
                       placeholder="e.g. Espresso, Double Cheeseburger"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                       required
                     />
                   </div>
@@ -966,7 +966,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       value={productForm.name_ar || ''}
                       onChange={(e) => setProductForm({ ...productForm, name_ar: e.target.value })}
                       placeholder="مثال: إسبريسو، تشيز برجر دبل"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                     />
                   </div>
                 </div>
@@ -980,7 +980,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       value={productForm.price}
                       onChange={(e) => setProductForm({ ...productForm, price: e.target.value })}
                       placeholder="9.60"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                       required
                     />
                   </div>
@@ -990,7 +990,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     <select
                       value={productForm.category_id}
                       onChange={(e) => setProductForm({ ...productForm, category_id: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                       required
                     >
                       <option value="" disabled>{isArabic ? "اختر فئة" : "Choose category"}</option>
@@ -1001,11 +1001,11 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   </div>
                 </div>
 
-                <section className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 space-y-3">
+                <section className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/50 p-4 space-y-3">
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <label className="text-xs font-black text-slate-800 block">{isArabic ? "مجموعة المحاسبة" : "Accounting Group"}</label>
-                      <p className="text-[11px] leading-5 text-slate-500 mt-1">
+                      <label className="text-xs font-black text-slate-800 dark:text-white block">{isArabic ? "مجموعة المحاسبة" : "Accounting Group"}</label>
+                      <p className="text-[11px] leading-5 text-slate-500 dark:text-slate-400 mt-1">
                         {isArabic ? "تحدد هذه المجموعة ملف الضريبة المشترك للمنتج حسب محلي أو سفري." : "This group applies the shared tax profile for dine-in and takeaway orders."}
                       </p>
                     </div>
@@ -1023,22 +1023,22 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                           setProductForm({ ...productForm, accounting_group_id: val });
                         }
                       }}
-                      className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                       required
                     >
                       <option value="" disabled>{isArabic ? '— اختر مجموعة محاسبية —' : '— Select an accounting group —'}</option>
                       {selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}
-                      <option value="__product_direct_vat__" className="font-bold text-blue-600 bg-blue-50">
+                      <option value="__product_direct_vat__" className="font-bold text-blue-600 bg-blue-50 dark:bg-slate-800">
                         {isArabic ? "⚡ تحديد الضريبة مباشرة للمنتج" : "⚡ Set VAT directly for product"}
                       </option>
-                      <option value="__create_custom_group__" className="font-bold text-amber-600 bg-amber-50">
+                      <option value="__create_custom_group__" className="font-bold text-amber-600 bg-amber-50 dark:bg-slate-800">
                         {isArabic ? "➕ ضريبة أخرى / مجموعة مخصصة" : "➕ Other / Custom Group"}
                       </option>
                     </select>
                     <button
                       type="button"
                       onClick={onManageAccountingGroups}
-                      className="inline-flex justify-center items-center gap-2 px-4 py-3 rounded-xl border border-slate-300 bg-white text-slate-700 hover:border-amber-400 hover:text-amber-700 text-xs font-bold transition-colors"
+                      className="inline-flex justify-center items-center gap-2 px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-amber-400 hover:text-amber-700 text-xs font-bold transition-colors"
                     >
                       <Settings2 className="w-4 h-4" />
                       {isArabic ? 'إدارة المجموعات' : 'Manage accounting groups'}
@@ -1046,27 +1046,27 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   </div>
 
                   {productForm.accounting_group_id === '__product_direct_vat__' && !showInlineCustomGroup && (
-                    <div className="mt-3 p-4 rounded-xl bg-blue-50/70 border border-blue-200 text-right space-y-3">
-                      <h4 className="font-black text-xs text-blue-900">
+                    <div className="mt-3 p-4 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-right space-y-3">
+                      <h4 className="font-black text-xs text-blue-900 dark:text-blue-200">
                         {isArabic ? "تحديد الضريبة مباشرة للمنتج" : "Set VAT Directly for Product"}
                       </h4>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-600 block">{isArabic ? "ضريبة الصالة" : "Dine-in VAT"}</label>
+                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">{isArabic ? "ضريبة الصالة" : "Dine-in VAT"}</label>
                           <select
                             value={directVatForm.dine_in_rate}
                             onChange={(e) => setDirectVatForm({ ...directVatForm, dine_in_rate: e.target.value })}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:border-blue-500"
                           >
                             {[21, 12, 6, 0].map(r => <option key={`direct-dine-${r}`} value={r}>{r}%</option>)}
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-600 block">{isArabic ? "ضريبة السفري" : "Takeaway VAT"}</label>
+                          <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">{isArabic ? "ضريبة السفري" : "Takeaway VAT"}</label>
                           <select
                             value={directVatForm.takeaway_rate}
                             onChange={(e) => setDirectVatForm({ ...directVatForm, takeaway_rate: e.target.value })}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white text-slate-800 focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:border-blue-500"
                           >
                             {[21, 12, 6, 0].map(r => <option key={`direct-take-${r}`} value={r}>{r}%</option>)}
                           </select>
@@ -1076,37 +1076,37 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   )}
 
                   {showInlineCustomGroup && (
-                    <div className="mt-3 p-4 rounded-xl bg-amber-50/70 border border-amber-200 text-right space-y-3">
-                      <h4 className="font-black text-xs text-amber-900">
+                    <div className="mt-3 p-4 rounded-xl bg-amber-50/70 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-right space-y-3">
+                      <h4 className="font-black text-xs text-amber-900 dark:text-amber-200">
                         {isArabic ? "إنشاء مجموعة محاسبية مخصصة جديدة" : "Create New Custom Accounting Group"}
                       </h4>
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-500 block">{isArabic ? "اسم المجموعة" : "Group Name"}</label>
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{isArabic ? "اسم المجموعة" : "Group Name"}</label>
                         <input
                           type="text"
                           value={customGroupForm.name}
                           onChange={(e) => setCustomGroupForm({ ...customGroupForm, name: e.target.value })}
                           placeholder={isArabic ? "مثال: مخبوزات، Ice Cream" : "e.g. Bakery, Ice Cream"}
-                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white focus:outline-none focus:border-amber-500"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                         />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-500 block">{isArabic ? "ضريبة الصالة" : "Dine-in VAT"}</label>
+                          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{isArabic ? "ضريبة الصالة" : "Dine-in VAT"}</label>
                           <select
                             value={customGroupForm.dine_in_rate}
                             onChange={(e) => setCustomGroupForm({ ...customGroupForm, dine_in_rate: e.target.value })}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white focus:outline-none focus:border-amber-500"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                           >
                             {[21, 12, 6, 0].map(r => <option key={`dine-${r}`} value={r}>{r}%</option>)}
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-500 block">{isArabic ? "ضريبة السفري" : "Takeaway VAT"}</label>
+                          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{isArabic ? "ضريبة السفري" : "Takeaway VAT"}</label>
                           <select
                             value={customGroupForm.takeaway_rate}
                             onChange={(e) => setCustomGroupForm({ ...customGroupForm, takeaway_rate: e.target.value })}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white focus:outline-none focus:border-amber-500"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-semibold bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                           >
                             {[21, 12, 6, 0].map(r => <option key={`take-${r}`} value={r}>{r}%</option>)}
                           </select>
@@ -1124,7 +1124,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                         <button
                           type="button"
                           onClick={() => setShowInlineCustomGroup(false)}
-                          className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-600 font-bold text-xs hover:bg-slate-50"
+                          className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs hover:bg-slate-50 dark:hover:bg-slate-700"
                         >
                           {isArabic ? "إلغاء" : "Cancel"}
                         </button>
@@ -1132,20 +1132,20 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     </div>
                   )}
 
-                  {!accountingGroups.length && <p className="text-[11px] text-amber-700 font-semibold">{isArabic ? 'أنشئ مجموعة محاسبية أولاً ثم اخترها للمنتج.' : 'Create an accounting group first, then assign it to this product.'}</p>}
+                  {!accountingGroups.length && <p className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold">{isArabic ? 'أنشئ مجموعة محاسبية أولاً ثم اخترها للمنتج.' : 'Create an accounting group first, then assign it to this product.'}</p>}
                   {selectedAccountingGroup && !showInlineCustomGroup && (
                     <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
-                      <div className="rounded-xl bg-white border border-slate-200 px-3 py-2 text-slate-700">
+                      <div className="rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-2 text-slate-700 dark:text-slate-200">
                         {isArabic ? 'صالة' : 'Dine-in'}: {selectedAccountingProfile?.dine_in_tax_rate?.rate ?? '—'}%
                       </div>
-                      <div className="rounded-xl bg-white border border-slate-200 px-3 py-2 text-slate-700">
+                      <div className="rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-2 text-slate-700 dark:text-slate-200">
                         {isArabic ? 'سفري' : 'Takeaway'}: {selectedAccountingProfile?.takeaway_tax_rate?.rate ?? '—'}%
                       </div>
                     </div>
                   )}
                 </section>
               </div>
-              <div className="p-5 border-t border-slate-100 bg-slate-50 flex gap-2">
+              <div className="p-5 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex gap-2">
                 <button
                   type="submit"
                   disabled={!canSubmitProductForm(productForm, savingProduct)}
@@ -1156,7 +1156,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 <button
                   type="button"
                   onClick={() => setProductModalOpen(false)}
-                  className="px-4 border border-slate-200 bg-white text-slate-600 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 transition-all"
+                  className="px-4 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
                 >
                   {isArabic ? "إلغاء" : "Cancel"}
                 </button>
@@ -1169,14 +1169,14 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       {/* --- MODIFIER MODAL --- */}
       {modifierModalOpen && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-              <h3 className="font-bold text-sm text-slate-850">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex items-center justify-between">
+              <h3 className="font-bold text-sm text-slate-850 dark:text-white">
                 {isArabic 
                   ? (editingModifier ? "تعديل الإضافة" : "إضافة خيار جديد") 
                   : (editingModifier ? "Edit Modifier" : "Add New Modifier")}
               </h3>
-              <button onClick={() => setModifierModalOpen(false)} className="text-slate-450 hover:text-slate-850">✕</button>
+              <button onClick={() => setModifierModalOpen(false)} className="text-slate-450 hover:text-slate-850 dark:hover:text-white">✕</button>
             </div>
             <form onSubmit={handleSaveModifier}>
               <div className="p-5 space-y-4 text-right">
@@ -1187,7 +1187,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     value={modifierForm.name}
                     onChange={(e) => setModifierForm({ ...modifierForm, name: e.target.value })}
                     placeholder="مثال: جبن شيدر إضافي"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                     required
                   />
                 </div>
@@ -1201,7 +1201,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       value={modifierForm.price_adjustment}
                       onChange={(e) => setModifierForm({ ...modifierForm, price_adjustment: e.target.value })}
                       placeholder="1.50"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                       required
                     />
                   </div>
@@ -1211,7 +1211,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                     <select
                       value={modifierForm.product_id}
                       onChange={(e) => setModifierForm({ ...modifierForm, product_id: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-amber-500"
                       required
                     >
                       <option value="">{isArabic ? "اختر منتج" : "Select Product"}</option>
@@ -1222,7 +1222,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   </div>
                 </div>
               </div>
-              <div className="p-5 border-t border-slate-100 bg-slate-50 flex gap-2">
+              <div className="p-5 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 flex gap-2">
                 <button
                   type="submit"
                   className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs py-2.5 rounded-xl transition-all"
@@ -1232,7 +1232,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 <button
                   type="button"
                   onClick={() => setModifierModalOpen(false)}
-                  className="px-4 border border-slate-200 bg-white text-slate-600 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 transition-all"
+                  className="px-4 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs py-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-all"
                 >
                   {isArabic ? "إلغاء" : "Cancel"}
                 </button>

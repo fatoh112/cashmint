@@ -156,19 +156,19 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
     <div className="space-y-6 text-right font-sans" dir={isArabic ? 'rtl' : 'ltr'}>
       
       {/* Top Header Navigation */}
-      <div className="border-b border-slate-150 pb-4 flex justify-between items-center bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+      <div className="border-b border-slate-150 dark:border-slate-800 pb-4 flex justify-between items-center bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm">
         <div className="flex items-center gap-3">
           <button
             onClick={onClose}
-            className="p-2 hover:bg-slate-50 text-slate-500 hover:text-slate-800 rounded-xl transition-all"
+            className="p-2 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white rounded-xl transition-all"
           >
             <ArrowLeft className={`w-5 h-5 ${isArabic ? '' : 'rotate-180'}`} />
           </button>
           <div>
-            <h2 className="text-lg font-black text-slate-800">
+            <h2 className="text-lg font-black text-slate-800 dark:text-white">
               {group ? (isArabic ? `تعديل مجموعة: ${group.name}` : `Edit Group: ${group.name}`) : (isArabic ? "إنشاء مجموعة خيارات جديدة" : "Create New Item Group")}
             </h2>
-            <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
+            <p className="text-[10px] text-slate-400 dark:text-slate-400 font-semibold mt-0.5">
               {isArabic ? "تكوين القواعد، التسعير، والعناصر المتاحة داخل المجموعة" : "Configure selection rules, strategies, and mapped products"}
             </p>
           </div>
@@ -196,26 +196,26 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
         {/* LEFT COLUMN: Section headers and descriptions */}
         <div className="lg:col-span-1 space-y-6">
           <div className="space-y-1">
-            <h4 className="font-extrabold text-sm text-slate-800 uppercase">{isArabic ? "البيانات الأساسية" : "Basics"}</h4>
-            <p className="text-[10px] text-slate-400 font-bold leading-relaxed">
+            <h4 className="font-extrabold text-sm text-slate-800 dark:text-white uppercase">{isArabic ? "البيانات الأساسية" : "Basics"}</h4>
+            <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold leading-relaxed">
               {isArabic 
                 ? "قم بتحديد الاسم الفريد ورمز SKU التعريفي للمجموعة لعرضها في منيو الكاشير." 
                 : "Specify a unique name and tracking SKU identifier for this choices group."}
             </p>
           </div>
 
-          <div className="space-y-1 pt-4 border-t border-slate-100">
-            <h4 className="font-extrabold text-sm text-slate-800 uppercase">{isArabic ? "إستراتيجية التسعير" : "Pricing Strategy"}</h4>
-            <p className="text-[10px] text-slate-400 font-bold leading-relaxed">
+          <div className="space-y-1 pt-4 border-t border-slate-100 dark:border-slate-800">
+            <h4 className="font-extrabold text-sm text-slate-800 dark:text-white uppercase">{isArabic ? "إستراتيجية التسعير" : "Pricing Strategy"}</h4>
+            <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold leading-relaxed">
               {isArabic 
                 ? "تحديد ما إذا كانت المنتجات المختارة تحافظ على أسعارها الأصلية، أم تطبق سعراً موحداً يتم تحديده للمجموعة ككل." 
                 : "Decide whether items maintain their base price, or apply a fixed group price override."}
             </p>
           </div>
 
-          <div className="space-y-1 pt-4 border-t border-slate-100">
-            <h4 className="font-extrabold text-sm text-slate-800 uppercase">{isArabic ? "قواعد الاختيار" : "Selection Rules"}</h4>
-            <p className="text-[10px] text-slate-400 font-bold leading-relaxed">
+          <div className="space-y-1 pt-4 border-t border-slate-100 dark:border-slate-800">
+            <h4 className="font-extrabold text-sm text-slate-800 dark:text-white uppercase">{isArabic ? "قواعد الاختيار" : "Selection Rules"}</h4>
+            <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold leading-relaxed">
               {isArabic 
                 ? "تحديد ما إذا كان هذا الخيار إجبارياً على الكاشير، وتعيين الحد الأدنى والأقصى من السلع المسموح باختيارها." 
                 : "Define selection logic, requiring choices at cashier check-out or making them optional."}
@@ -227,36 +227,36 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
         <div className="lg:col-span-2 space-y-6">
           
           {/* Card 1: Basics */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-4">
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-450 uppercase block mr-1">{isArabic ? "اسم مجموعة الخيارات" : "Group Name"}</label>
+              <label className="text-[10px] font-bold text-slate-450 dark:text-slate-400 uppercase block mr-1">{isArabic ? "اسم مجموعة الخيارات" : "Group Name"}</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="مثال: إضافات البرجر، اختيار الأطباق الجانبية"
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-blue-500"
                 required
               />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold text-slate-455 uppercase block mr-1">{isArabic ? "الرمز SKU للمجموعة" : "Group SKU"}</label>
+              <label className="text-[10px] font-bold text-slate-455 dark:text-slate-400 uppercase block mr-1">{isArabic ? "الرمز SKU للمجموعة" : "Group SKU"}</label>
               <input
                 type="text"
                 value={sku}
                 onChange={(e) => setSku(e.target.value)}
                 placeholder="SKU-GRP-BURGER"
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-blue-500"
               />
             </div>
           </div>
 
           {/* Card 2: Pricing Strategy & Reactive Logic 1 */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-            <span className="font-extrabold text-xs text-slate-800 block">{isArabic ? "تسعير الخيارات (Choice Price)" : "Choice Price Logic"}</span>
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-4">
+            <span className="font-extrabold text-xs text-slate-800 dark:text-white block">{isArabic ? "تسعير الخيارات (Choice Price)" : "Choice Price Logic"}</span>
             
-            <div className="space-y-3 font-semibold text-xs text-slate-700">
+            <div className="space-y-3 font-semibold text-xs text-slate-700 dark:text-slate-200">
               <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="radio"
@@ -284,8 +284,8 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
 
             {/* Reactive Logic 1: Show Group Price if set_price is active */}
             {priceStrategy === 'set_price' && (
-              <div className="space-y-1.5 pt-3 border-t border-slate-50 animate-fade-in">
-                <label className="text-[10px] font-bold text-slate-455 uppercase block mr-1">
+              <div className="space-y-1.5 pt-3 border-t border-slate-50 dark:border-slate-750 animate-fade-in">
+                <label className="text-[10px] font-bold text-slate-455 dark:text-slate-400 uppercase block mr-1">
                   {isArabic ? "السعر الموحد للخيارات داخل المجموعة (EUR)" : "Fixed Group Price in EUR"}
                 </label>
                 <input
@@ -293,17 +293,17 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
                   step="0.01"
                   value={groupPrice}
                   onChange={(e) => setGroupPrice(e.target.value)}
-                  className="w-32 px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-850 focus:outline-none focus:border-blue-500"
+                  className="w-32 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-850 dark:text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
             )}
           </div>
 
           {/* Card 3: Selection Rules & Reactive Logic 2 */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-            <span className="font-extrabold text-xs text-slate-800 block">{isArabic ? "قواعد الاختيار (Selection Rules)" : "Selection Rules"}</span>
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-4">
+            <span className="font-extrabold text-xs text-slate-800 dark:text-white block">{isArabic ? "قواعد الاختيار (Selection Rules)" : "Selection Rules"}</span>
 
-            <div className="space-y-3 font-semibold text-xs text-slate-700">
+            <div className="space-y-3 font-semibold text-xs text-slate-700 dark:text-slate-200">
               <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="radio"
@@ -329,34 +329,34 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
 
             {/* Reactive Logic 2: Show Min/Max limits if required */}
             {isRequired && (
-              <div className="space-y-4 pt-3 border-t border-slate-50 animate-fade-in">
+              <div className="space-y-4 pt-3 border-t border-slate-50 dark:border-slate-750 animate-fade-in">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-455 uppercase block mr-1">{isArabic ? "الحد الأدنى للخيارات" : "Minimum Items"}</label>
+                    <label className="text-[10px] font-bold text-slate-455 dark:text-slate-400 uppercase block mr-1">{isArabic ? "الحد الأدنى للخيارات" : "Minimum Items"}</label>
                     <input
                       type="number"
                       min="1"
                       value={minItems}
                       onChange={(e) => setMinItems(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-blue-500"
                     />
                   </div>
 
                   {!noMaximum && (
                     <div className="space-y-1.5 animate-fade-in">
-                      <label className="text-[10px] font-bold text-slate-455 uppercase block mr-1">{isArabic ? "الحد الأقصى للخيارات" : "Maximum Items"}</label>
+                      <label className="text-[10px] font-bold text-slate-455 dark:text-slate-400 uppercase block mr-1">{isArabic ? "الحد الأقصى للخيارات" : "Maximum Items"}</label>
                       <input
                         type="number"
                         min="1"
                         value={maxItems}
                         onChange={(e) => setMaxItems(e.target.value)}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-500"
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-blue-500"
                       />
                     </div>
                   )}
                 </div>
 
-                <label className="flex items-center gap-2 cursor-pointer font-bold text-[10px] text-slate-500">
+                <label className="flex items-center gap-2 cursor-pointer font-bold text-[10px] text-slate-500 dark:text-slate-400">
                   <input
                     type="checkbox"
                     checked={noMaximum}
@@ -373,15 +373,15 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
           </div>
 
           {/* Card 4: Link Products (Junction Mapping) */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+          <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-4">
             <div>
-              <span className="font-extrabold text-xs text-slate-800 block">{isArabic ? "العناصر المدرجة بالمجموعة" : "Mapped Products List"}</span>
-              <span className="text-[9px] text-slate-450 font-bold mt-1 block">
+              <span className="font-extrabold text-xs text-slate-800 dark:text-white block">{isArabic ? "العناصر المدرجة بالمجموعة" : "Mapped Products List"}</span>
+              <span className="text-[9px] text-slate-450 dark:text-slate-400 font-bold mt-1 block">
                 {isArabic ? "اختر المنتجات المتوفرة لتكون خيارات صالحة للاختيار داخل هذه المجموعة" : "Map products from catalog to be choices under this item group."}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto p-1 border border-slate-100 rounded-xl bg-slate-50/55">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto p-1 border border-slate-100 dark:border-slate-700 rounded-xl bg-slate-50/55 dark:bg-slate-900/50">
               {allProducts.map(prod => {
                 const isSelected = selectedProductIds.includes(prod.id);
                 return (
@@ -389,18 +389,18 @@ export default function GroupConfigForm({ store, group, onClose, showNotificatio
                     key={prod.id}
                     onClick={() => toggleProductSelect(prod.id)}
                     className={`p-3 border rounded-xl cursor-pointer flex items-center justify-between transition-all ${
-                      isSelected ? 'border-blue-500 bg-blue-50/20' : 'border-slate-200 bg-white hover:border-slate-350'
+                      isSelected ? 'border-blue-500 bg-blue-50/20 dark:bg-blue-950/40' : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-slate-350'
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                        isSelected ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'
+                        isSelected ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900'
                       }`}>
                         {isSelected && <Check className="w-2.5 h-2.5" />}
                       </div>
-                      <span className="font-bold text-xs text-slate-800">{prod.name}</span>
+                      <span className="font-bold text-xs text-slate-800 dark:text-slate-200">{prod.name}</span>
                     </div>
-                    <span className="font-black text-slate-400 text-[10px]">{parseFloat(prod.price).toFixed(2)} €</span>
+                    <span className="font-black text-slate-400 dark:text-slate-400 text-[10px]">{parseFloat(prod.price).toFixed(2)} €</span>
                   </div>
                 );
               })}
