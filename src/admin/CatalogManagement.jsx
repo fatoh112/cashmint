@@ -23,8 +23,8 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   const [itemSearch, setItemSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
-  const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [bulkGroupId, setBulkGroupId] = useState('');
+  const [bulkCategoryId, setBulkCategoryId] = useState('');
 
   // Modal States
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -267,15 +267,15 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
         name: productForm.name.trim(),
         category_id: productForm.category_id || null,
         price: parseFloat(productForm.price),
-        accounting_group_id: targetGroupId,
-        is_available: productForm.is_available
+        accounting_group_id: targetGroupId
       };
 
       if (editingProduct) {
         const { error } = await supabase
           .from('products')
           .update(payload)
-          .eq('id', editingProduct.id);
+          .eq('id', editingProduct.id)
+          .eq('store_id', store.id);
         if (error) throw error;
         showNotification(isArabic ? "تم تحديث المنتج بنجاح" : "Product updated successfully");
       } else {
@@ -288,10 +288,11 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
       setProductModalOpen(false);
       setEditingProduct(null);
       setProductForm({ ...emptyProductForm, category_id: '', accounting_group_id: defaultGroupId || '' });
-      await fetchCatalog();
+      await fetchCatalog(true);
     } catch (err) {
-      console.error(err);
-      showNotification(err.message || (isArabic ? "خطأ أثناء حفظ المنتج" : "Error saving product"), "error");
+      console.error("Supabase error saving product:", err);
+      const errMsg = err?.message || err?.details || err?.hint || (isArabic ? "خطأ أثناء حفظ المنتج" : "Error saving product");
+      showNotification(errMsg, "error");
     } finally {
       setSavingProduct(false);
     }
@@ -392,14 +393,61 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   });
   const toggleProductSelection = (id) => setSelectedProductIds(current => current.includes(id) ? current.filter(selected => selected !== id) : [...current, id]);
   const toggleVisibleProducts = () => setSelectedProductIds(current => visibleProducts.every(product => current.includes(product.id)) ? current.filter(id => !visibleProducts.some(product => product.id === id)) : [...new Set([...current, ...visibleProducts.map(product => product.id)])]);
-  const applyBulkGroup = async () => {
-    if (!bulkGroupId || !selectedProductIds.length) return;
+  const applyBulkActions = async () => {
+    if (selectedProductIds.length === 0) return;
+    if (!bulkCategoryId && !bulkGroupId) {
+      showNotification(isArabic ? 'يرجى اختيار فئة أو مجموعة محاسبية لتطبيق التغيير.' : 'Please select a category or an accounting group to apply changes.', 'error');
+      return;
+    }
+
+    const payload = {};
+    if (bulkCategoryId) payload.category_id = bulkCategoryId;
+    if (bulkGroupId) {
+      payload.accounting_group_id = bulkGroupId;
+      payload.accounting_group_is_override = true;
+    }
+
+    const catObj = categories.find(c => c.id === bulkCategoryId);
+    const grpObj = selectableAccountingGroups.find(g => g.id === bulkGroupId);
+
+    let confirmMsg = isArabic
+      ? `هل أنت متأكد من تطبيق التحديثات على ${selectedProductIds.length} منتج؟`
+      : `Are you sure you want to update ${selectedProductIds.length} products?`;
+
+    if (bulkCategoryId && catObj) {
+      confirmMsg += `\n- ${isArabic ? 'الفئة الجديدة' : 'New Category'}: ${catObj.name}`;
+    }
+    if (bulkGroupId && grpObj) {
+      confirmMsg += `\n- ${isArabic ? 'المجموعة المحاسبية الجديدة' : 'New Accounting Group'}: ${accountingGroupLabel(grpObj)}`;
+    }
+
+    if (!confirm(confirmMsg)) return;
+
     try {
-      const { error } = await supabase.from('products').update({ accounting_group_id: bulkGroupId, accounting_group_is_override: true }).in('id', selectedProductIds);
+      setLoading(true);
+      const { error } = await supabase
+        .from('products')
+        .update(payload)
+        .in('id', selectedProductIds)
+        .eq('store_id', store.id);
+
       if (error) throw error;
-      showNotification(isArabic ? `تم تحديث ${selectedProductIds.length} منتج.` : `Updated ${selectedProductIds.length} products.`);
-      setSelectedProductIds([]); setBulkGroupId(''); fetchCatalog();
-    } catch (error) { console.error(error); showNotification(isArabic ? 'تعذر تحديث المنتجات.' : 'Unable to update products.', 'error'); }
+
+      showNotification(
+        isArabic
+          ? `تم تحديث ${selectedProductIds.length} منتج بنجاح`
+          : `Successfully updated ${selectedProductIds.length} products`
+      );
+      setSelectedProductIds([]);
+      setBulkCategoryId('');
+      setBulkGroupId('');
+      await fetchCatalog(true);
+    } catch (err) {
+      console.error(err);
+      showNotification(err.message || (isArabic ? 'خطأ أثناء التحديث الجماعي' : 'Error performing bulk update'), 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
 
@@ -540,7 +588,43 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 <div className="flex flex-wrap gap-2">
                   <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل الفئات' : 'All categories'}</option>{categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
                   <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold"><option value="all">{isArabic ? 'كل المجموعات الحسابية' : 'All accounting groups'}</option>{selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select>
-                  {selectedProductIds.length > 0 && <div className="flex gap-2 rounded-lg bg-amber-50 border border-amber-200 p-1.5"><span className="px-2 py-1 text-xs font-black text-amber-800">{selectedProductIds.length} {isArabic ? 'محدد' : 'selected'}</span><select value={bulkGroupId} onChange={(e) => setBulkGroupId(e.target.value)} className="rounded-md border px-2 text-xs"><option value="">{isArabic ? 'تعيين مجموعة...' : 'Assign group...'}</option>{selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}</select><button onClick={applyBulkGroup} disabled={!bulkGroupId} className="rounded-md bg-amber-500 px-3 text-xs font-bold text-white disabled:opacity-40">{isArabic ? 'تطبيق' : 'Apply'}</button></div>}
+                  {selectedProductIds.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50/90 border border-amber-200 p-2 shadow-sm">
+                      <span className="px-2.5 py-1 text-xs font-black text-amber-900 bg-amber-200/60 rounded-lg">
+                        {selectedProductIds.length} {isArabic ? 'محدد' : 'selected'}
+                      </span>
+                      
+                      <select
+                        value={bulkCategoryId}
+                        onChange={(e) => setBulkCategoryId(e.target.value)}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="">{isArabic ? '— تغيير الفئة —' : '— Change category —'}</option>
+                        {categories.map(category => (
+                          <option key={category.id} value={category.id}>{category.name}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={bulkGroupId}
+                        onChange={(e) => setBulkGroupId(e.target.value)}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="">{isArabic ? '— تعيين مجموعة —' : '— Assign group —'}</option>
+                        {selectableAccountingGroups.map(group => (
+                          <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>
+                        ))}
+                      </select>
+
+                      <button
+                        onClick={applyBulkActions}
+                        disabled={!bulkCategoryId && !bulkGroupId}
+                        className="rounded-lg bg-amber-500 hover:bg-amber-600 px-3.5 py-1.5 text-xs font-extrabold text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+                      >
+                        {isArabic ? 'تطبيق' : 'Apply'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
