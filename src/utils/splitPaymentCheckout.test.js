@@ -547,4 +547,165 @@ describe('Split Payment & Restored Audit Validations Suite', () => {
     });
   });
 
+  describe('Stripe Terminal Edge Function Amount Calculation & Safety', () => {
+
+    function simulateCreateTerminalPaymentIntent(request, stripeIntents = []) {
+      const order = request.orders;
+      const requestAmount = request.amount_cents == null ? null : Number(request.amount_cents);
+      const amount = requestAmount != null ? requestAmount : Math.round(Number(order.total_amount) * 100);
+
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        throw new Error('Server payment amount is invalid');
+      }
+
+      if (request.stripe_payment_intent_id) {
+        const existingIntent = stripeIntents.find(i => i.id === request.stripe_payment_intent_id);
+        if (existingIntent && existingIntent.amount !== amount) {
+          throw new Error('Stripe PaymentIntent amount mismatch: Do not silently reuse incorrect amount intent.');
+        }
+        return { id: request.stripe_payment_intent_id, client_secret: request.stripe_payment_intent_client_secret };
+      }
+
+      const intentId = `pi_${Math.random().toString(36).substring(7)}`;
+      const intent = {
+        id: intentId,
+        client_secret: `${intentId}_secret`,
+        amount: amount
+      };
+      stripeIntents.push(intent);
+
+      request.stripe_payment_intent_id = intent.id;
+      request.stripe_payment_intent_client_secret = intent.client_secret;
+      request.status = 'waiting_for_card';
+
+      return { id: intent.id, client_secret: intent.client_secret };
+    }
+
+    test('normal €6.50 Card checkout sends 650 cents', () => {
+      const request = {
+        id: 'req-1',
+        amount_cents: null,
+        orders: { total_amount: 6.50, currency: 'EUR' }
+      };
+      const stripeIntents = [];
+      simulateCreateTerminalPaymentIntent(request, stripeIntents);
+      expect(stripeIntents[0].amount).toBe(650);
+    });
+
+    test('€6.50 split into €3.25 Cash + €3.25 Card sends 325 cents', () => {
+      const request = {
+        id: 'req-2',
+        amount_cents: 325,
+        orders: { total_amount: 6.50, currency: 'EUR' }
+      };
+      const stripeIntents = [];
+      simulateCreateTerminalPaymentIntent(request, stripeIntents);
+      expect(stripeIntents[0].amount).toBe(325);
+    });
+
+    test('request.amount_cents takes priority over order.total_amount', () => {
+      const request = {
+        id: 'req-3',
+        amount_cents: 150,
+        orders: { total_amount: 10.00, currency: 'EUR' }
+      };
+      const stripeIntents = [];
+      simulateCreateTerminalPaymentIntent(request, stripeIntents);
+      expect(stripeIntents[0].amount).toBe(150);
+    });
+
+    test('null amount_cents falls back to order total', () => {
+      const request = {
+        id: 'req-4',
+        amount_cents: null,
+        orders: { total_amount: 5.00, currency: 'EUR' }
+      };
+      const stripeIntents = [];
+      simulateCreateTerminalPaymentIntent(request, stripeIntents);
+      expect(stripeIntents[0].amount).toBe(500);
+    });
+
+    test('zero, negative, decimal, or unsafe values are rejected', () => {
+      const stripeIntents = [];
+
+      // Zero
+      expect(() => simulateCreateTerminalPaymentIntent({
+        amount_cents: 0,
+        orders: { total_amount: 5.00 }
+      }, stripeIntents)).toThrow('Server payment amount is invalid');
+
+      // Negative
+      expect(() => simulateCreateTerminalPaymentIntent({
+        amount_cents: -50,
+        orders: { total_amount: 5.00 }
+      }, stripeIntents)).toThrow('Server payment amount is invalid');
+
+      // Decimal
+      expect(() => simulateCreateTerminalPaymentIntent({
+        amount_cents: 12.5,
+        orders: { total_amount: 5.00 }
+      }, stripeIntents)).toThrow('Server payment amount is invalid');
+
+      // Unsafe
+      expect(() => simulateCreateTerminalPaymentIntent({
+        amount_cents: Number.MAX_SAFE_INTEGER + 1,
+        orders: { total_amount: 5.00 }
+      }, stripeIntents)).toThrow('Server payment amount is invalid');
+    });
+
+    test('an existing wrong-amount PaymentIntent is not silently reused', () => {
+      const request = {
+        id: 'req-5',
+        amount_cents: 325,
+        orders: { total_amount: 6.50, currency: 'EUR' },
+        stripe_payment_intent_id: 'pi_wrong',
+        stripe_payment_intent_client_secret: 'pi_wrong_secret'
+      };
+      const stripeIntents = [{ id: 'pi_wrong', amount: 650 }];
+
+      expect(() => simulateCreateTerminalPaymentIntent(request, stripeIntents)).toThrow(
+        'Stripe PaymentIntent amount mismatch: Do not silently reuse incorrect amount intent.'
+      );
+    });
+
+    test('retry creates a new card request and PaymentIntent for the correct card amount', () => {
+      const db = createMockDbEnvironment();
+      const order = db.create_accounting_order({
+        p_store_id: 'store-1',
+        p_device_id: 'device-active',
+        p_cashier_session_id: 'session-open',
+        p_status: 'pending',
+        p_payment_method: 'split',
+        p_order_type: 'dine_in',
+        p_total_amount: 30.00,
+        p_lines: [{ productId: 'prod-1', quantity: 3 }]
+      });
+
+      const splitRes = db.create_split_payment({
+        p_order_id: order.id,
+        p_cash_amount_cents: 1000,
+        p_card_amount_cents: 2000,
+        p_idempotency_key: `split-${order.id}-key-1`,
+        p_pos_device_id: 'device-active'
+      });
+
+      const reqRecord = db.tables.payment_requests[0];
+      reqRecord.stripe_payment_intent_id = 'pi_incorrect';
+      reqRecord.stripe_payment_intent_client_secret = 'pi_incorrect_secret';
+      reqRecord.status = 'failed';
+
+      const retryRes = db.retry_split_card_payment({
+        p_split_id: splitRes.split_id,
+        p_idempotency_key: `split-${order.id}-retry-key`,
+        p_pos_device_id: 'device-active'
+      });
+
+      const newReqRecord = db.tables.payment_requests.find(r => r.id === retryRes.card_payment_request_id);
+      expect(newReqRecord.id).not.toBe(reqRecord.id);
+      expect(newReqRecord.amount_cents).toBe(2000);
+      expect(newReqRecord.stripe_payment_intent_id).toBeUndefined();
+    });
+
+  });
+
 });
