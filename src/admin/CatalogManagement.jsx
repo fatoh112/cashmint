@@ -36,6 +36,15 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   const [productForm, setProductForm] = useState(emptyProductForm);
   const [savingProduct, setSavingProduct] = useState(false);
 
+  // Inline Custom Group State inside Product Modal
+  const [showInlineCustomGroup, setShowInlineCustomGroup] = useState(false);
+  const [customGroupForm, setCustomGroupForm] = useState({
+    name: '',
+    dine_in_rate: '12',
+    takeaway_rate: '6'
+  });
+  const [savingCustomGroup, setSavingCustomGroup] = useState(false);
+
   const [modifierModalOpen, setModifierModalOpen] = useState(false);
   const [editingModifier, setEditingModifier] = useState(null);
   const [modifierForm, setModifierForm] = useState({
@@ -215,6 +224,80 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     }
   };
 
+  const handleCreateInlineCustomGroup = async (e) => {
+    e.preventDefault();
+    const name = customGroupForm.name?.trim();
+    if (!name) {
+      showNotification(isArabic ? 'يرجى إدخال اسم المجموعة المخصصة.' : 'Please enter a custom group name.', 'error');
+      return;
+    }
+
+    const lowerName = name.toLowerCase();
+    if (lowerName === 'other' || lowerName === 'unassigned' || lowerName === 'unassigned / legacy') {
+      showNotification(isArabic ? 'هذا الاسم محجوز، يرجى اختيار اسم آخر.' : 'This name is reserved, please choose another name.', 'error');
+      return;
+    }
+
+    const duplicate = accountingGroups.some(g => g.name.trim().toLowerCase() === lowerName);
+    if (duplicate) {
+      showNotification(isArabic ? 'توجد مجموعة بهذا الاسم بالفعل.' : 'An accounting group with this name already exists.', 'error');
+      return;
+    }
+
+    try {
+      setSavingCustomGroup(true);
+      const dineInNum = Number(customGroupForm.dine_in_rate);
+      const takeawayNum = Number(customGroupForm.takeaway_rate);
+
+      // 1. Ensure tax rate rows exist
+      let { data: rDine } = await supabase.from('tax_rates').select('id').eq('store_id', store.id).eq('rate', dineInNum).maybeSingle();
+      if (!rDine) {
+        const { data: newRDine, error: rDineErr } = await supabase.from('tax_rates').insert({ store_id: store.id, name: `VAT ${dineInNum}%`, rate: dineInNum, is_active: true }).select('id').single();
+        if (rDineErr) throw rDineErr;
+        rDine = newRDine;
+      }
+
+      let { data: rTake } = await supabase.from('tax_rates').select('id').eq('store_id', store.id).eq('rate', takeawayNum).maybeSingle();
+      if (!rTake) {
+        const { data: newRTake, error: rTakeErr } = await supabase.from('tax_rates').insert({ store_id: store.id, name: `VAT ${takeawayNum}%`, rate: takeawayNum, is_active: true }).select('id').single();
+        if (rTakeErr) throw rTakeErr;
+        rTake = newRTake;
+      }
+
+      // 2. Ensure tax profile row exists
+      const profileName = `Tax Profile (${dineInNum}% / ${takeawayNum}%)`;
+      let { data: pExist } = await supabase.from('tax_profiles').select('id').eq('store_id', store.id).eq('dine_in_tax_rate_id', rDine.id).eq('takeaway_tax_rate_id', rTake.id).maybeSingle();
+      if (!pExist) {
+        const { data: newP, error: newPErr } = await supabase.from('tax_profiles').insert({ store_id: store.id, name: profileName, dine_in_tax_rate_id: rDine.id, takeaway_tax_rate_id: rTake.id, is_active: true }).select('id').single();
+        if (newPErr) throw newPErr;
+        pExist = newP;
+      }
+
+      // 3. Create accounting_groups row
+      const { data: newGroup, error: groupErr } = await supabase.from('accounting_groups').insert({
+        store_id: store.id,
+        name: name,
+        tax_profile_id: pExist.id,
+        is_active: true,
+        is_default: false
+      }).select('id').single();
+
+      if (groupErr) throw groupErr;
+
+      // 4. Refresh catalog & assign to current product form
+      await fetchCatalog();
+      setProductForm(prev => ({ ...prev, accounting_group_id: newGroup.id }));
+      setShowInlineCustomGroup(false);
+      showNotification(isArabic ? 'تم إنشاء المجموعة المحاسبية وتعيينها للمنتج بنجاح' : 'Custom accounting group created and assigned to product', 'success');
+
+    } catch (err) {
+      console.error(err);
+      showNotification(err.message || (isArabic ? 'خطأ أثناء إنشاء المجموعة المخصصة' : 'Error creating custom group'), 'error');
+    } finally {
+      setSavingCustomGroup(false);
+    }
+  };
+
   const handleDeleteProduct = async (id) => {
     if (!confirm(isArabic ? "هل أنت متأكد من حذف هذا المنتج؟" : "Are you sure you want to delete this product?")) return;
     try {
@@ -368,8 +451,8 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                 <button
                   onClick={() => {
                     setEditingProduct(null);
-                    const firstCategory = categories[0];
-                    setProductForm({ ...emptyProductForm, category_id: firstCategory?.id || '', accounting_group_id: firstCategory?.default_accounting_group_id || defaultGroupId });
+                    setShowInlineCustomGroup(false);
+                    setProductForm({ ...emptyProductForm, category_id: '', accounting_group_id: defaultGroupId || '' });
                     setProductModalOpen(true);
                   }}
                   className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-2 active:scale-95 transition-all shadow-sm shadow-amber-500/10"
@@ -426,6 +509,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                               <button
                                 onClick={() => {
                                   setEditingProduct(product);
+                                  setShowInlineCustomGroup(false);
                                   setProductForm({
                                     name: product.name,
                                     category_id: product.category_id || '',
@@ -706,13 +790,24 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   </div>
                   <div className="flex flex-col sm:flex-row gap-2">
                     <select
-                      value={productForm.accounting_group_id}
-                      onChange={(e) => setProductForm({ ...productForm, accounting_group_id: e.target.value })}
+                      value={showInlineCustomGroup ? '__create_custom_group__' : productForm.accounting_group_id}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '__create_custom_group__') {
+                          setShowInlineCustomGroup(true);
+                        } else {
+                          setShowInlineCustomGroup(false);
+                          setProductForm({ ...productForm, accounting_group_id: val });
+                        }
+                      }}
                       className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
                       required
                     >
-                      <option value="">{isArabic ? '— اختر مجموعة محاسبية —' : '— Select an accounting group —'}</option>
+                      <option value="" disabled>{isArabic ? '— اختر مجموعة محاسبية —' : '— Select an accounting group —'}</option>
                       {selectableAccountingGroups.map(group => <option key={group.id} value={group.id}>{accountingGroupLabel(group)}</option>)}
+                      <option value="__create_custom_group__" className="font-bold text-amber-600 bg-amber-50">
+                        {isArabic ? "➕ ضريبة أخرى / مجموعة مخصصة" : "➕ Other / Custom Group"}
+                      </option>
                     </select>
                     <button
                       type="button"
@@ -723,8 +818,66 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       {isArabic ? 'إدارة المجموعات' : 'Manage accounting groups'}
                     </button>
                   </div>
+
+                  {showInlineCustomGroup && (
+                    <div className="mt-3 p-4 rounded-xl bg-amber-50/70 border border-amber-200 text-right space-y-3">
+                      <h4 className="font-black text-xs text-amber-900">
+                        {isArabic ? "إنشاء مجموعة محاسبية مخصصة جديدة" : "Create New Custom Accounting Group"}
+                      </h4>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 block">{isArabic ? "اسم المجموعة" : "Group Name"}</label>
+                        <input
+                          type="text"
+                          value={customGroupForm.name}
+                          onChange={(e) => setCustomGroupForm({ ...customGroupForm, name: e.target.value })}
+                          placeholder={isArabic ? "مثال: مخبوزات، Ice Cream" : "e.g. Bakery, Ice Cream"}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-500 block">{isArabic ? "ضريبة الصالة" : "Dine-in VAT"}</label>
+                          <select
+                            value={customGroupForm.dine_in_rate}
+                            onChange={(e) => setCustomGroupForm({ ...customGroupForm, dine_in_rate: e.target.value })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white focus:outline-none focus:border-amber-500"
+                          >
+                            {[21, 12, 6, 0].map(r => <option key={`dine-${r}`} value={r}>{r}%</option>)}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-500 block">{isArabic ? "ضريبة السفري" : "Takeaway VAT"}</label>
+                          <select
+                            value={customGroupForm.takeaway_rate}
+                            onChange={(e) => setCustomGroupForm({ ...customGroupForm, takeaway_rate: e.target.value })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-semibold bg-white focus:outline-none focus:border-amber-500"
+                          >
+                            {[21, 12, 6, 0].map(r => <option key={`take-${r}`} value={r}>{r}%</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={handleCreateInlineCustomGroup}
+                          disabled={savingCustomGroup}
+                          className="flex-1 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs transition-colors disabled:opacity-50"
+                        >
+                          {savingCustomGroup ? (isArabic ? "جارٍ الإنشاء..." : "Creating...") : (isArabic ? "إنشاء المجموعة" : "Create Group")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowInlineCustomGroup(false)}
+                          className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-600 font-bold text-xs hover:bg-slate-50"
+                        >
+                          {isArabic ? "إلغاء" : "Cancel"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {!accountingGroups.length && <p className="text-[11px] text-amber-700 font-semibold">{isArabic ? 'أنشئ مجموعة محاسبية أولاً ثم اخترها للمنتج.' : 'Create an accounting group first, then assign it to this product.'}</p>}
-                  {selectedAccountingGroup && (
+                  {selectedAccountingGroup && !showInlineCustomGroup && (
                     <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
                       <div className="rounded-xl bg-white border border-slate-200 px-3 py-2 text-slate-700">
                         {isArabic ? 'صالة' : 'Dine-in'}: {selectedAccountingProfile?.dine_in_tax_rate?.rate ?? '—'}%
