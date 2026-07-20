@@ -53,7 +53,7 @@ export default function TaxManagement({ store, showNotification, isArabic }) {
       setProducts(productsResult.data || []);
     } catch (e) {
       console.error(e);
-      showNotification(t('تعذر تحميل المجموعات المحاسبية', 'Unable to load accounting groups'), 'error');
+      showNotification(isArabic ? 'تعذر تحميل المجموعات المحاسبية' : 'Unable to load accounting groups', 'error');
     }
   }, [store?.id, isArabic, showNotification]);
 

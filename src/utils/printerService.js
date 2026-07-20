@@ -61,9 +61,87 @@ function normalizeStoreInfo(storeInput, config = {}) {
 }
 
 /**
+ * Converts a store logo URL into 1-bit monochrome raster image XML for Epson TM-T20IV.
+ * Epson ePOS XML image syntax: <image width="256" height="128" align="center" color="color_1">HEX_RASTER_DATA</image>
+ */
+export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTargetWidth = 256) {
+  if (!logoUrl) return '';
+
+  try {
+    const img = new Image();
+    img.crossOrigin = 'Anonymous';
+
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = (e) => reject(new Error('Failed to load logo image for thermal rasterization'));
+      img.src = logoUrl;
+    });
+
+    // Ensure target width is a multiple of 8 (Epson requirement)
+    let width = Math.min(img.width || 256, maxTargetWidth);
+    width = Math.floor(width / 8) * 8;
+    if (width < 8) width = 8;
+
+    const scale = width / img.width;
+    const height = Math.max(1, Math.round(img.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    // Fill white background for transparent PNGs
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, width, height);
+
+    // Draw scaled image onto canvas
+    ctx.drawImage(img, 0, 0, width, height);
+
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const pixels = imgData.data;
+
+    // Convert pixels to 1-bit monochrome raster data (1 = black, 0 = white, MSB first)
+    const bytesPerRow = width / 8;
+    const rasterBytes = new Uint8Array(bytesPerRow * height);
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const offset = (y * width + x) * 4;
+        const r = pixels[offset];
+        const g = pixels[offset + 1];
+        const b = pixels[offset + 2];
+        const a = pixels[offset + 3];
+
+        // Alpha transparent pixels treated as white (255)
+        const luminance = a < 128 ? 255 : (0.299 * r + 0.587 * g + 0.114 * b);
+        const isBlack = luminance < 128;
+
+        if (isBlack) {
+          const byteIdx = y * bytesPerRow + Math.floor(x / 8);
+          const bitIdx = 7 - (x % 8);
+          rasterBytes[byteIdx] |= (1 << bitIdx);
+        }
+      }
+    }
+
+    // Convert raster bytes to Hex string
+    let hexString = '';
+    for (let i = 0; i < rasterBytes.length; i++) {
+      hexString += rasterBytes[i].toString(16).padStart(2, '0');
+    }
+
+    console.log(`🖨️ [PRINTER-SERVICE] Monochrome logo converted (${width}x${height}px, ${hexString.length / 2} bytes)`);
+    return `<image width="${width}" height="${height}" align="${align}" color="color_1">${hexString.toUpperCase()}</image>&#10;`;
+  } catch (err) {
+    console.warn("🖨️ [PRINTER-SERVICE] Logo conversion for Epson XML failed:", err.message);
+    return '';
+  }
+}
+
+/**
  * Generates the Epson ePOS XML command string driven by JSON template config.
  */
-export function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
+export async function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
   const outputType = options.outputType || options.templateType || 'pos_receipt';
   const config = mergeAndEnforceReceiptConfig(options.templateConfig || {}, outputType);
   const store = normalizeStoreInfo(storeInput, config);
@@ -92,10 +170,18 @@ export function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
   // Render sections in configured order
   const sectionsOrder = config.sections_order || ['header', 'meta', 'items', 'subtotals', 'tax_breakdown', 'payments', 'footer'];
 
-  sectionsOrder.forEach((sectionKey) => {
+  for (const sectionKey of sectionsOrder) {
     switch (sectionKey) {
       case 'header': {
         const align = config.header?.logo_align || 'center';
+
+        // Render Monochrome Thermal Logo for Epson TM-T20IV
+        if (config.header?.show_logo && store.logo_url && !isKitchen) {
+          const logoXml = await convertLogoToEpsonXML(store.logo_url, align, config.paper_width === 58 ? 256 : 384);
+          if (logoXml) {
+            xml += logoXml;
+          }
+        }
 
         if (config.header?.show_store_name && store.name) {
           xml += `<text align="${align}" font="font_a" em="true">${escapeXML(store.name)}&#10;</text>`;
@@ -263,7 +349,7 @@ export function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
       default:
         break;
     }
-  });
+  }
   // Payment Label/Method if present
   if (order.raw_payload?.payment_splits) {
     xml += `<text align="left">طريقة الدفع / Payment: دفع مجزأ / Split Payment&#10;</text>`;
@@ -713,7 +799,7 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
 <feed line="3"/>
 <cut type="feed"/>`;
   } else {
-    xmlContent = buildReceiptXML(order, storeInput, options);
+    xmlContent = await buildReceiptXML(order, storeInput, options);
   }
 
   const soapPayload = `<?xml version="1.0" encoding="utf-8"?>
@@ -725,11 +811,13 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
   </s:Body>
 </s:Envelope>`;
 
-  const isDebug = import.meta.env.DEV === true || localStorage.getItem('epos_debug') === 'true';
+  console.log("🖨️ [PRINTER-SERVICE] OutputType:", options.outputType || 'pos_receipt', "| Target IP:", cleanIP);
+  console.log("🖨️ [PRINTER-SERVICE] Generated XML Length:", xmlContent.length, "bytes | SOAP Payload Length:", soapPayload.length, "bytes");
+
+  const isDebug = true; // Always output debug traces to diagnose printing
   if (isDebug) {
-    console.log("ePOS Normalized Printer IP:", cleanIP);
-    console.log("ePOS Final Endpoint:", endpoint);
-    console.log("ePOS SOAP Payload:", soapPayload);
+    console.log("🖨️ [PRINTER-SERVICE] ePOS Endpoint:", endpoint);
+    console.log("🖨️ [PRINTER-SERVICE] ePOS SOAP Payload:\n", soapPayload);
   }
 
   let response;

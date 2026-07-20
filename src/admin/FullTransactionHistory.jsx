@@ -16,7 +16,7 @@ import {
   CreditCard,
   Utensils
 } from 'lucide-react';
-
+// oxlint-disable-next-line react/only-export-components
 export const resolveOrderStatus = (order, isArabic) => {
   const orderStatus = order?.status;
   const paymentArr = Array.isArray(order?.payments) ? order.payments : (order?.payments ? [order.payments] : []);

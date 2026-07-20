@@ -575,21 +575,33 @@ export default function App() {
   }, [activePaymentOrderId]);
 
   const enqueueAutoReceiptPrint = useCallback((order) => {
+    console.log("🖨️ [AUTO-PRINT] enqueueAutoReceiptPrint invoked with order:", order);
     const orderKey = order?.id || (order?.receipt_number ? `receipt-${order.receipt_number}` : null);
-    if (!orderKey) return Promise.resolve({ success: false, skipped: true });
+    if (!orderKey) {
+      console.warn("🖨️ [AUTO-PRINT] Missing orderKey, skipping print.");
+      return Promise.resolve({ success: false, skipped: true, reason: 'missing_order_key' });
+    }
 
     const existingJob = autoPrintJobsRef.current.get(orderKey);
-    if (existingJob) return existingJob;
+    if (existingJob) {
+      console.log("🖨️ [AUTO-PRINT] Print job already queued/in progress for orderKey:", orderKey);
+      return existingJob;
+    }
 
     const job = autoPrintQueueRef.current
       .catch(() => { })
       .then(async () => {
         const autoPrintMaster = localStorage.getItem('auto_print_enabled') !== 'false';
         const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
+        console.log("🖨️ [AUTO-PRINT] Settings check - Master Enabled:", autoPrintMaster, "| Printer IP:", localPrinterIP);
+
         if (!localPrinterIP || !autoPrintMaster) {
-          return { success: false, skipped: true };
+          console.warn("🖨️ [AUTO-PRINT] Skipping print: Master toggle disabled or Printer IP missing.");
+          return { success: false, skipped: true, reason: 'disabled_or_no_ip' };
         }
-        if (!markOrderReceiptPrinted(order.id)) {
+
+        if (order?.id && !markOrderReceiptPrinted(order.id)) {
+          console.log("🖨️ [AUTO-PRINT] Order already printed previously:", order.id);
           return { success: true, skipped: true, alreadyPrinted: true };
         }
 
@@ -597,13 +609,16 @@ export default function App() {
         const autoPrintCustomer = localStorage.getItem('auto_print_customer') === 'true';
         const autoPrintKitchen = localStorage.getItem('auto_print_kitchen') !== 'false';
 
+        console.log("🖨️ [AUTO-PRINT] Output toggles - Cashier:", autoPrintCashier, "| Customer:", autoPrintCustomer, "| Kitchen:", autoPrintKitchen);
+
         const enabledOutputs = [];
         if (autoPrintCashier) enabledOutputs.push('pos_receipt');
         if (autoPrintCustomer) enabledOutputs.push('customer_receipt');
         if (autoPrintKitchen) enabledOutputs.push('kitchen_ticket');
 
         if (enabledOutputs.length === 0) {
-          return { success: false, skipped: true };
+          console.warn("🖨️ [AUTO-PRINT] Skipping print: No output toggles enabled.");
+          return { success: false, skipped: true, reason: 'no_outputs_enabled' };
         }
 
         // Fetch store templates
@@ -619,8 +634,9 @@ export default function App() {
             (tpls || []).forEach(t => {
               tplMap[t.template_type] = t.config_json;
             });
+            console.log("🖨️ [AUTO-PRINT] Loaded store receipt templates:", Object.keys(tplMap));
           } catch (e) {
-            console.warn("Could not load store receipt templates:", e);
+            console.warn("🖨️ [AUTO-PRINT] Could not load store receipt templates:", e);
           }
         }
 
@@ -630,6 +646,7 @@ export default function App() {
         for (let i = 0; i < enabledOutputs.length; i++) {
           const outputType = enabledOutputs[i];
           const templateConfig = tplMap[outputType] || tplMap['cashier_receipt'] || tplMap['pos_receipt'];
+          console.log(`🖨️ [AUTO-PRINT] Dispatching output ${i + 1}/${enabledOutputs.length} (${outputType}) to ${localPrinterIP}`);
 
           let jobRes = { success: false, error: 'Print job failed' };
           for (let attempt = 1; attempt <= 3; attempt++) {
@@ -639,6 +656,7 @@ export default function App() {
               skipFallback: true,
               isArabic
             });
+            console.log(`🖨️ [AUTO-PRINT] Attempt ${attempt} result for ${outputType}:`, jobRes);
             if (jobRes.success) break;
             if (attempt < 3) {
               await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1841,6 +1859,14 @@ export default function App() {
         setShowStripeModal(true);
         setStripeStatus(paymentRequest.status || 'pending');
         setLastCompletedOrder(createdOrder);
+
+        if (orderCompleteSoundEnabled) playChime();
+        setCart([]);
+        showNotification(isArabic ? "جاري إرسال الطلب لجهاز البطاقة... 💳" : "Payment request sent to terminal... 💳");
+      } else {
+        // Cash / Direct payment completed
+        setLastCompletedOrder(createdOrder);
+        console.log("🖨️ [CHECKOUT] Cash payment completed. Invoking auto print for order:", createdOrder.id);
         enqueueAutoReceiptPrint(createdOrder);
 
         if (orderCompleteSoundEnabled) playChime();
