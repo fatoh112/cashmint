@@ -44,13 +44,13 @@ function normalizeStoreInfo(storeInput, config = {}) {
   const baseStore = typeof storeInput === 'string'
     ? { name: storeInput, legal_name: storeInput, address: '', vat_number: '', phone: '', logo_url: '' }
     : {
-        name: storeInput?.name || 'Cashmint Store',
-        legal_name: storeInput?.legal_name || storeInput?.name || 'Cashmint POS SRL',
-        address: storeInput?.address || storeInput?.street_address || '',
-        vat_number: storeInput?.vat_number || storeInput?.tax_id || '',
-        phone: storeInput?.phone || '',
-        logo_url: storeInput?.logo_url || ''
-      };
+      name: storeInput?.name || 'Cashmint Store',
+      legal_name: storeInput?.legal_name || storeInput?.name || 'Cashmint POS SRL',
+      address: storeInput?.address || storeInput?.street_address || '',
+      vat_number: storeInput?.vat_number || storeInput?.tax_id || '',
+      phone: storeInput?.phone || '',
+      logo_url: storeInput?.logo_url || ''
+    };
 
   return {
     ...baseStore,
@@ -149,8 +149,8 @@ export function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
         }
 
         if (config.meta?.show_timestamp) {
-          const dateStr = raw.timestamp 
-            ? new Date(raw.timestamp).toLocaleString(lang === 'ar' ? 'ar-BE' : 'en-BE') 
+          const dateStr = raw.timestamp
+            ? new Date(raw.timestamp).toLocaleString(lang === 'ar' ? 'ar-BE' : 'en-BE')
             : new Date().toLocaleString('en-BE');
           xml += `<text align="left">${escapeXML(t('date'))}: ${escapeXML(dateStr)}&#10;</text>`;
         }
@@ -264,6 +264,18 @@ export function buildReceiptXML(order, storeInput = 'Cashmint', options = {}) {
         break;
     }
   });
+  // Payment Label/Method if present
+  if (order.raw_payload?.payment_splits) {
+    xml += `<text align="left">طريقة الدفع / Payment: دفع مجزأ / Split Payment&#10;</text>`;
+    xml += `<text align="left">${escapeXML(formatLine('  نقداً / Cash:', `${parseFloat(order.raw_payload.payment_splits.cash_amount || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
+    xml += `<text align="left">${escapeXML(formatLine('  بطاقة / Card:', `${parseFloat(order.raw_payload.payment_splits.card_amount || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
+    xml += `<text align="left">${escapeXML(formatLine('  إجمالي المدفوع / Total Paid:', `${subtotal.toFixed(2)} EUR`, width))}&#10;</text>`;
+    xml += `<text align="left">${separator}&#10;</text>`;
+  } else if (order.raw_payload?.payment_label) {
+    const escapedPaymentLabel = escapeXML(order.raw_payload.payment_label);
+    xml += `<text align="left">طريقة الدفع / Payment: ${escapedPaymentLabel}&#10;</text>`;
+    xml += `<text align="left">${separator}&#10;</text>`;
+  }
 
   xml += `<feed line="3"/>`;
   xml += `<cut type="feed"/>`;
@@ -369,8 +381,8 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
               bodyHtml += `<div>${t('order_num')}: ${order.id.substring(0, 8)}</div>`;
             }
             if (config.meta?.show_timestamp) {
-              const dateStr = raw.timestamp 
-                ? new Date(raw.timestamp).toLocaleString(isRtl ? 'ar-BE' : 'en-BE') 
+              const dateStr = raw.timestamp
+                ? new Date(raw.timestamp).toLocaleString(isRtl ? 'ar-BE' : 'en-BE')
                 : new Date().toLocaleString('en-BE');
               bodyHtml += `<div>${t('date')}: ${dateStr}</div>`;
             }
@@ -536,6 +548,89 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
 </head>
 <body>
   ${bodyHtml}
+  <div class="text-center header-title">${storeName}</div>
+  <div class="text-center">نظام نقاط البيع / POS System</div>
+  <div class="double-divider"></div>
+  
+  <div>رقم الطلب / Order: ${order.id ? order.id.substring(0, 8) : 'NEW'}</div>
+  <div>التاريخ / Date: ${dateStr}</div>
+  <div>نوع الطلب / Type: ${typeLabel}</div>
+  <div class="divider"></div>
+  
+  <div class="item-row" style="font-weight: bold;">
+    <span class="item-name">العنصر / Item</span>
+    <span class="item-price">السعر / Price</span>
+  </div>
+  <div class="divider"></div>
+`;
+
+      items.forEach(item => {
+        const itemTotal = parseFloat(item.price * item.quantity).toFixed(2);
+        html += `
+  <div class="item-row">
+    <span class="item-name">${item.name} x${item.quantity}</span>
+    <span class="item-price">${itemTotal} EUR</span>
+  </div>
+`;
+
+        if (item.modifiers && item.modifiers.length > 0) {
+          item.modifiers.forEach(mod => {
+            const modAdjustment = parseFloat(mod.price_adjustment * item.quantity).toFixed(2);
+            html += `
+  <div class="modifier-row">
+    <span>  + ${mod.name}</span>
+    <span>+${modAdjustment} EUR</span>
+  </div>
+`;
+          });
+        }
+      });
+
+      let paymentHtml = '';
+      if (order.raw_payload?.payment_splits) {
+        paymentHtml = `
+  <div class="item-row" style="font-weight: bold;">
+    <span>طريقة الدفع / Payment:</span>
+    <span>دفع مجزأ / Split Payment</span>
+  </div>
+  <div class="item-row" style="font-size: 11px;">
+    <span>  - نقداً / Cash:</span>
+    <span>${parseFloat(order.raw_payload.payment_splits.cash_amount || 0).toFixed(2)} EUR</span>
+  </div>
+  <div class="item-row" style="font-size: 11px;">
+    <span>  - بطاقة / Card:</span>
+    <span>${parseFloat(order.raw_payload.payment_splits.card_amount || 0).toFixed(2)} EUR</span>
+  </div>
+  <div class="divider"></div>
+`;
+      } else if (order.raw_payload?.payment_label) {
+        paymentHtml = `
+  <div class="item-row">
+    <span>طريقة الدفع / Payment:</span>
+    <span>${order.raw_payload.payment_label}</span>
+  </div>
+  <div class="divider"></div>
+`;
+      }
+
+      html += `
+  <div class="divider"></div>
+  ${paymentHtml}
+  <div class="item-row">
+    <span>المجموع الفرعي / Subtotal:</span>
+    <span>${subtotalWithoutVat.toFixed(2)} EUR</span>
+  </div>
+  <div class="item-row">
+    <span>ضريبة القيمة المضافة / VAT (12%):</span>
+    <span>${vatAmount.toFixed(2)} EUR</span>
+  </div>
+  <div class="total-row">
+    <span>المجموع الكلي / TOTAL:</span>
+    <span>${parseFloat(subtotal).toFixed(2)} EUR</span>
+  </div>
+  <div class="double-divider"></div>
+  <div class="text-center">شكراً لزيارتكم! / Thank you for your visit!</div>
+  
   <script>
     window.onload = function() {
       window.focus();
@@ -610,7 +705,7 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
   }
 
   const endpoint = `https://${cleanIP}/cgi-bin/epos/service.cgi?devid=local_printer&timeout=10000`;
-  
+
   let xmlContent = '';
   if (options.minimalTest) {
     xmlContent = `<text align="center">CASHMINT TEST&#10;</text>
@@ -709,13 +804,13 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
       const fallbackRes = await printViaIframeFallback(order, storeInput, options);
       return fallbackRes;
     } catch (fallbackError) {
-      return { 
-        success: false, 
+      return {
+        success: false,
         transport: "epos",
         endpoint: endpoint,
         status: response ? response.status : undefined,
         response: responseText || undefined,
-        error: `Direct connection failed (${error.message}) & Fallback print failed (${fallbackError.message})` 
+        error: `Direct connection failed (${error.message}) & Fallback print failed (${fallbackError.message})`
       };
     }
   }

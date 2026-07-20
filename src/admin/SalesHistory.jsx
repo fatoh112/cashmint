@@ -264,7 +264,12 @@ export default function SalesHistory({ store, showNotification, isArabic }) {
                       
                       const orderType = order.order_type || order.raw_payload?.order_type || 'takeaway';
                       const typeLabel = orderType === 'dine_in' ? (isArabic ? '🍽️ محلي' : 'Dine In') : (isArabic ? '🛍️ سفري' : 'Takeaway');
-                      const methodLabel = (order.payment_method || 'cash') === 'card' ? (isArabic ? '💳 بطاقة' : 'Card') : (isArabic ? '💵 نقداً' : 'Cash');
+                      const rawMethod = order.payment_method || (Array.isArray(order.payments) && order.payments.length > 1 ? 'split' : 'cash');
+                      const methodLabel = rawMethod === 'split' || (Array.isArray(order.payments) && order.payments.length > 1)
+                        ? (isArabic ? '💳💵 مجزأ' : 'Split')
+                        : rawMethod === 'card'
+                          ? (isArabic ? '💳 بطاقة' : 'Card')
+                          : (isArabic ? '💵 نقداً' : 'Cash');
                       const statusBadge = resolveOrderStatus(order, isArabic);
                       const isSelected = selectedOrder?.id === order.id;
 
