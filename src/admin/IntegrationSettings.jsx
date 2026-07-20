@@ -803,9 +803,9 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                     return (
                       <div 
                         key={`pos-${device.id}`}
-                        className="p-3 bg-slate-50/50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-750 rounded-xl flex items-center justify-between gap-3 text-right"
+                        className="p-3 bg-slate-50/50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-750 rounded-xl space-y-2 text-right"
                       >
-                        <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-3">
                           <div className="flex items-center gap-2">
                             <span className={`w-2 h-2 rounded-full ${
                               device.status === 'revoked'
@@ -818,59 +818,78 @@ export default function IntegrationSettings({ store, setStore, showNotification,
                               {device.device_name}
                             </h4>
                           </div>
-                          <p className="text-[9px] font-mono text-slate-500 dark:text-slate-400">
-                            {device.activation_code ? `${isArabic ? 'الكود' : 'Code'}: ${device.activation_code}` : `ID: ${device.id.slice(0, 8)}`}
-                            {activeSession && ` · ${isArabic ? 'الوردية' : 'Shift'}: ${activeSession.cashier_name}`}
-                          </p>
+
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                              device.status === 'revoked'
+                                ? 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400'
+                                : online
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                            }`}>
+                              {device.status === 'revoked'
+                                ? (isArabic ? "موقوف" : "Disabled")
+                                : online
+                                  ? (isArabic ? "متصل" : "Connected")
+                                  : (isArabic ? "غير متصل" : "Offline")
+                              }
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleDeviceStatus(device.id, device.status)}
+                              className={`p-1.5 rounded-lg border transition-all active:scale-95 cursor-pointer ${
+                                device.status === 'active'
+                                  ? 'border-amber-200 hover:bg-amber-50 dark:border-amber-900/40 text-amber-600'
+                                  : 'border-emerald-200 hover:bg-emerald-50 dark:border-emerald-900/40 text-emerald-500'
+                              }`}
+                              title={device.status === 'active' ? (isArabic ? "تعطيل مؤقت" : "Disable Device") : (isArabic ? "تفعيل الجهاز" : "Enable Device")}
+                            >
+                              <Power className="w-3.5 h-3.5" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeDevice(device.id)}
+                              className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 text-rose-500 transition-all active:scale-95 cursor-pointer"
+                              title={isArabic ? "إلغاء التفعيل نهائياً (Revoke)" : "Revoke Device"}
+                            >
+                              <ShieldAlert className="w-3.5 h-3.5" />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDevice(device.id)}
+                              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 dark:border-slate-700/60 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition-all active:scale-95 cursor-pointer"
+                              title={isArabic ? "حذف الجهاز" : "Delete Device"}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                            device.status === 'revoked'
-                              ? 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400'
-                              : online
-                                ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
-                          }`}>
-                            {device.status === 'revoked'
-                              ? (isArabic ? "موقوف" : "Disabled")
-                              : online
-                                ? (isArabic ? "متصل" : "Online")
-                                : (isArabic ? "غير متصل" : "Offline")
-                            }
-                          </span>
-
-                          <button
-                            type="button"
-                            onClick={() => handleToggleDeviceStatus(device.id, device.status)}
-                            className={`p-1.5 rounded-lg border transition-all active:scale-95 cursor-pointer ${
-                              device.status === 'active'
-                                ? 'border-amber-200 hover:bg-amber-50 dark:border-amber-900/40 text-amber-600'
-                                : 'border-emerald-200 hover:bg-emerald-50 dark:border-emerald-900/40 text-emerald-500'
-                            }`}
-                            title={device.status === 'active' ? (isArabic ? "تعطيل مؤقت" : "Disable Device") : (isArabic ? "تفعيل الجهاز" : "Enable Device")}
-                          >
-                            <Power className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleRevokeDevice(device.id)}
-                            className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 text-rose-500 transition-all active:scale-95 cursor-pointer"
-                            title={isArabic ? "إلغاء التفعيل نهائياً (Revoke)" : "Revoke Device"}
-                          >
-                            <ShieldAlert className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteDevice(device.id)}
-                            className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 dark:border-slate-700/60 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition-all active:scale-95 cursor-pointer"
-                            title={isArabic ? "حذف الجهاز" : "Delete Device"}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-[10px]">
+                          <div>
+                            <span className="font-bold text-slate-400 dark:text-slate-500 block text-[9px] uppercase">ID:</span>
+                            <span className="font-extrabold font-mono text-slate-700 dark:text-slate-300 select-all">
+                              {device.id.slice(0, 8)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="font-bold text-slate-400 dark:text-slate-500 block text-[9px] uppercase">
+                              {isArabic ? "كود التفعيل:" : "Activation Code:"}
+                            </span>
+                            <span className="font-extrabold font-mono text-amber-600 dark:text-amber-400 select-all">
+                              {device.activation_code || '—'}
+                            </span>
+                          </div>
                         </div>
+
+                        {activeSession && (
+                          <div className="text-[9px] font-semibold text-slate-400 dark:text-slate-500 pt-0.5">
+                            {isArabic ? `الوردية الحالية: ${activeSession.cashier_name}` : `Active Shift: ${activeSession.cashier_name}`}
+                          </div>
+                        )}
                       </div>
                     );
                   })

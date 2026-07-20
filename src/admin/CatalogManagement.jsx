@@ -31,6 +31,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
   const [categoryName, setCategoryName] = useState('');
+  const [categoryNameAr, setCategoryNameAr] = useState('');
 
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
@@ -141,11 +142,16 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     if (!categoryName?.trim()) return;
 
     try {
+      const payload = {
+        name: categoryName.trim(),
+        name_ar: categoryNameAr.trim() || null
+      };
+
       if (editingCategory) {
         // Update
         const { error } = await supabase
           .from('categories')
-          .update({ name: categoryName.trim() })
+          .update(payload)
           .eq('id', editingCategory.id);
         if (error) throw error;
         showNotification(isArabic ? "تم تحديث الفئة بنجاح" : "Category updated successfully");
@@ -153,12 +159,13 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
         // Create
         const { error } = await supabase
           .from('categories')
-          .insert({ name: categoryName.trim(), store_id: store.id });
+          .insert({ ...payload, store_id: store.id });
         if (error) throw error;
         showNotification(isArabic ? "تم إضافة الفئة بنجاح" : "Category added successfully");
       }
       setCategoryModalOpen(false);
       setCategoryName('');
+      setCategoryNameAr('');
       setEditingCategory(null);
       fetchCatalog();
     } catch (err) {
@@ -266,6 +273,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
 
       const payload = {
         name: productForm.name.trim(),
+        name_ar: productForm.name_ar?.trim() || null,
         category_id: productForm.category_id || null,
         price: parseFloat(productForm.price),
         accounting_group_id: targetGroupId
@@ -650,7 +658,12 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                       return (
                         <tr key={product.id} className="hover:bg-slate-50/55 transition-all">
                           <td className="p-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={() => toggleProductSelection(product.id)} /></td>
-                          <td className="p-4 font-bold text-slate-800">{product.name}</td>
+                          <td className="p-4">
+                            <div className="font-bold text-slate-800">{product.name}</div>
+                            {product.name_ar && (
+                              <div className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">{product.name_ar}</div>
+                            )}
+                          </td>
                           <td className="p-4 text-slate-500">{categoryName}</td>
                           <td className="p-4 font-black">{parseFloat(product.price).toFixed(2)} €</td>
                           <td className="p-4">
@@ -681,6 +694,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                     });
                                     setProductForm({
                                       name: product.name,
+                                      name_ar: product.name_ar || '',
                                       category_id: product.category_id || '',
                                       price: product.price,
                                       accounting_group_id: '__product_direct_vat__',
@@ -689,6 +703,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                                   } else {
                                     setProductForm({
                                       name: product.name,
+                                      name_ar: product.name_ar || '',
                                       category_id: product.category_id || '',
                                       price: product.price,
                                       accounting_group_id: needsConfig ? '' : (product.accounting_group_id || ''),
@@ -729,6 +744,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   onClick={() => {
                     setEditingCategory(null);
                     setCategoryName('');
+                    setCategoryNameAr('');
                     setCategoryModalOpen(true);
                   }}
                   className="bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs px-4 py-2 rounded-xl flex items-center gap-2 active:scale-95 transition-all shadow-sm shadow-amber-500/10"
@@ -750,7 +766,12 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                   <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                     {categories.map(category => (
                       <tr key={category.id} className="hover:bg-slate-50/55 transition-all">
-                        <td className="p-4 font-bold text-slate-800">{category.name}</td>
+                        <td className="p-4">
+                          <div className="font-bold text-slate-800">{category.name}</div>
+                          {category.name_ar && (
+                            <div className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 mt-0.5">{category.name_ar}</div>
+                          )}
+                        </td>
                         <td className="p-4 text-slate-450">{new Date(category.created_at).toLocaleDateString()}</td>
                         <td className="p-4">
                           <div className="flex justify-center gap-2.5">
@@ -758,6 +779,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
                               onClick={() => {
                                 setEditingCategory(category);
                                 setCategoryName(category.name);
+                                setCategoryNameAr(category.name_ar || '');
                                 setCategoryModalOpen(true);
                               }}
                               className="w-7 h-7 rounded-lg bg-slate-100 text-slate-500 hover:bg-amber-50 hover:text-amber-600 flex items-center justify-center transition-all"
@@ -868,14 +890,25 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
             <form onSubmit={handleSaveCategory}>
               <div className="p-5 space-y-4 text-right">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "اسم الفئة بالعربية / الإنجليزية" : "Category Name"}</label>
+                  <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "اسم الفئة الرئيسية (الإنجليزية / العامة)" : "Category Primary Name"}</label>
                   <input
                     type="text"
                     value={categoryName}
                     onChange={(e) => setCategoryName(e.target.value)}
-                    placeholder="مثال: مشروبات، Burgers"
+                    placeholder="مثال: Beverages, Burgers"
                     className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
                     required
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "اسم الفئة بالعربية (اختياري)" : "Arabic Name (Optional)"}</label>
+                  <input
+                    type="text"
+                    value={categoryNameAr}
+                    onChange={(e) => setCategoryNameAr(e.target.value)}
+                    placeholder="مثال: مشروبات، برجر"
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
                   />
                 </div>
               </div>
@@ -913,16 +946,29 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
             </div>
             <form onSubmit={handleSaveProduct}>
               <div className="p-5 space-y-4 text-right">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "اسم المنتج" : "Product Name"}</label>
-                  <input
-                    type="text"
-                    value={productForm.name}
-                    onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
-                    placeholder="مثال: تشيز برجر دبل"
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
-                    required
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "اسم المنتج (الأساسي)" : "Primary Product Name"}</label>
+                    <input
+                      type="text"
+                      value={productForm.name}
+                      onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                      placeholder="e.g. Espresso, Double Cheeseburger"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 block">{isArabic ? "الاسم بالعربية (اختياري)" : "Arabic Name (Optional)"}</label>
+                    <input
+                      type="text"
+                      value={productForm.name_ar || ''}
+                      onChange={(e) => setProductForm({ ...productForm, name_ar: e.target.value })}
+                      placeholder="مثال: إسبريسو، تشيز برجر دبل"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-800 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">

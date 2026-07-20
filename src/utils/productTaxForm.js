@@ -1,5 +1,6 @@
 export const emptyProductForm = {
   name: '',
+  name_ar: '',
   category_id: '',
   price: '',
   accounting_group_id: '',
@@ -26,6 +27,7 @@ export function buildProductPayload(form, _category) {
   if (!groupId) throw new Error('Product requires an accounting group');
   return {
     name: form.name.trim(),
+    name_ar: form.name_ar?.trim() || null,
     category_id: form.category_id,
     price: Number(form.price),
     accounting_group_id: groupId,

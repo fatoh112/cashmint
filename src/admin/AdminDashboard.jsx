@@ -24,6 +24,8 @@ import {
   History
 } from 'lucide-react';
 
+const BRANDING_VERSION = 'Cashmint v2.1';
+
 export default function AdminDashboard({ store, setStore, session, setView: _setView, showNotification, isArabic, setIsArabic, theme, setTheme }) {
   const [activeModule, setActiveModule] = useState('sales'); // 'sales', 'catalog', 'integrations'
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -407,7 +409,7 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
           {/* Footer branding details */}
           <div className="p-5 border-t border-slate-100 dark:border-slate-700 text-center">
             <span className="text-[9px] font-bold text-slate-350 dark:text-slate-500 tracking-wide uppercase">
-              {isArabic ? "بلبرجر SaaS v2.1" : "BelBurger SaaS v2.1"}
+              {BRANDING_VERSION}
             </span>
           </div>
 

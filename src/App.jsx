@@ -7,12 +7,29 @@ import { calculateOrderAccounting } from './utils/taxCalculator';
 import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
 
-const currentMode = import.meta.env.MODE;
+const currentMode = import.meta.env.VITE_APP_MODE || import.meta.env.MODE;
 
 const isMasterHost = typeof window !== 'undefined' &&
-  (window.location.hostname === 'cashmint.online' ||
+  (
+    window.location.hostname === 'cashmint.online' ||
     window.location.hostname.endsWith('.cashmint.online') ||
-    import.meta.env.VITE_APP_MODE === 'master');
+    import.meta.env.VITE_APP_MODE === 'master' ||
+    import.meta.env.MODE === 'master'
+  );
+
+const isPosMode = (import.meta.env.VITE_APP_MODE === 'pos' || import.meta.env.MODE === 'pos') && !isMasterHost;
+const isStoreMode = !isPosMode && !isMasterHost;
+
+console.log("MODE AUDIT", {
+  VITE_APP_MODE: import.meta.env.VITE_APP_MODE,
+  MODE: import.meta.env.MODE,
+  currentMode,
+  isMasterHost,
+  isPosMode,
+  isStoreMode,
+  hostname: typeof window !== 'undefined' ? window.location.hostname : 'ssr'
+});
+
 
 const isStoreOnboarded = (store) => Boolean(store?.onboarding_completed && store?.onboarding_status === 'completed');
 
@@ -327,7 +344,7 @@ export default function App() {
 
     try {
       showNotification(isArabic ? "جاري رفع الشعار..." : "Uploading logo...", "info");
-      
+
       const fileExt = file.name.split('.').pop();
       const fileName = `${store.id}-${Date.now()}.${fileExt}`;
       const filePath = `${fileName}`;
@@ -528,7 +545,7 @@ export default function App() {
     if (existingJob) return existingJob;
 
     const job = autoPrintQueueRef.current
-      .catch(() => {})
+      .catch(() => { })
       .then(async () => {
         const autoPrint = localStorage.getItem('auto_print_enabled') !== 'false';
         const localPrinterIP = localStorage.getItem('local_printer_ip') || '';
@@ -554,7 +571,7 @@ export default function App() {
 
     autoPrintJobsRef.current.set(orderKey, job);
     autoPrintQueueRef.current = job
-      .catch(() => {})
+      .catch(() => { })
       .then(() => new Promise(resolve => setTimeout(resolve, 3000)));
     setTimeout(() => autoPrintJobsRef.current.delete(orderKey), 60000);
     return job;
@@ -633,7 +650,7 @@ export default function App() {
 
   // Notification State
   const [notification, setNotification] = useState(null);
-  
+
   // Maintenance Mode States
   const [isUnderMaintenance, setIsUnderMaintenance] = useState(false);
 
@@ -646,13 +663,13 @@ export default function App() {
           .select('maintenance_mode')
           .eq('id', 1)
           .maybeSingle();
-        
+
         if (error) throw error;
         if (data?.maintenance_mode) {
           // Verify if the active user is an admin or superadmin
           const isSuper = isMasterHost;
           const { storeData, roleVal } = await resolveTenant(session);
-          
+
           if (!isSuper && roleVal !== 'admin') {
             setIsUnderMaintenance(true);
           } else {
@@ -927,16 +944,15 @@ export default function App() {
 
         setUserRole(roleVal);
 
-        // If master host or user has an admin role, bypass all POS checks and load store details
-        if (isMasterHost || roleVal === 'admin') {
-          setStore(storeData);
-          if (storeData) {
-            localStorage.setItem('store_id', storeData.id);
-            localStorage.setItem('current_store_name', storeData.name || '');
-            localStorage.setItem('current_store_logo', storeData.logo_url || '');
-          }
+        setStore(storeData);
+        if (storeData) {
+          localStorage.setItem('store_id', storeData.id);
+          localStorage.setItem('current_store_name', storeData.name || '');
+          localStorage.setItem('current_store_logo', storeData.logo_url || '');
+        }
 
-          // Bypass POS checks
+        // If master host or in store/backoffice mode, stop here and bypass POS checks
+        if (isMasterHost || isStoreMode) {
           setLoadingSession(false);
           setIsCheckingStore(false);
           return;
@@ -950,59 +966,53 @@ export default function App() {
       setLoadingSession(false);
     }
 
-    // If we are on cashmint.online, we should stop and not do POS checks
-    if (isMasterHost) {
+    // If master or store mode, stop and do not do POS checks
+    if (isMasterHost || isStoreMode) {
       setLoadingSession(false);
       setIsCheckingStore(false);
       return;
     }
 
-    // POS or Store/Admin mode checks for non-admin/non-master
-    if (currentMode === 'store' || currentMode === 'admin') {
-      setLoadingSession(false);
-      setIsCheckingStore(false);
-    } else {
-      // POS mode with no admin logged in
-      const storedDeviceId = localStorage.getItem('device_id');
-      const storedStoreId = localStorage.getItem('store_id');
-      if (storedDeviceId && storedStoreId) {
-        setDeviceAuth({ deviceId: storedDeviceId, storeId: storedStoreId });
+    // POS mode device & cashier session resolution
+    const storedDeviceId = localStorage.getItem('device_id');
+    const storedStoreId = localStorage.getItem('store_id');
+    if (storedDeviceId && storedStoreId) {
+      setDeviceAuth({ deviceId: storedDeviceId, storeId: storedStoreId });
 
-        const storedSessionId = localStorage.getItem('cashier_session_id');
-        const storedCashierName = localStorage.getItem('cashier_name');
-        const storedOpeningBalance = localStorage.getItem('cashier_opening_balance');
-        const storedPin = localStorage.getItem('cashier_pin');
-        if (storedSessionId && storedCashierName) {
-          setActiveCashierSession({
-            id: storedSessionId,
-            cashierName: storedCashierName,
-            openingBalance: parseFloat(storedOpeningBalance || 0),
-            totalSales: 0,
-            cashBalance: parseFloat(storedOpeningBalance || 0)
-          });
-          supabase
-            .from('cashier_sessions')
-            .select('*')
-            .eq('id', storedSessionId)
-            .maybeSingle()
-            .then(({ data: sessData }) => {
-              if (sessData) {
-                setActiveCashierSession({
-                  id: sessData.id,
-                  cashierName: sessData.cashier_name,
-                  openingBalance: parseFloat(sessData.opening_balance || 0),
-                  totalSales: parseFloat(sessData.total_sales || 0),
-                  cashBalance: parseFloat(sessData.cash_balance || 0)
-                });
-              }
-            })
-            .catch(err => console.error("Error fetching cashier session on load:", err));
-          setCashierPin(storedPin || '');
-        }
+      const storedSessionId = localStorage.getItem('cashier_session_id');
+      const storedCashierName = localStorage.getItem('cashier_name');
+      const storedOpeningBalance = localStorage.getItem('cashier_opening_balance');
+      const storedPin = localStorage.getItem('cashier_pin');
+      if (storedSessionId && storedCashierName) {
+        setActiveCashierSession({
+          id: storedSessionId,
+          cashierName: storedCashierName,
+          openingBalance: parseFloat(storedOpeningBalance || 0),
+          totalSales: 0,
+          cashBalance: parseFloat(storedOpeningBalance || 0)
+        });
+        supabase
+          .from('cashier_sessions')
+          .select('*')
+          .eq('id', storedSessionId)
+          .maybeSingle()
+          .then(({ data: sessData }) => {
+            if (sessData) {
+              setActiveCashierSession({
+                id: sessData.id,
+                cashierName: sessData.cashier_name,
+                openingBalance: parseFloat(sessData.opening_balance || 0),
+                totalSales: parseFloat(sessData.total_sales || 0),
+                cashBalance: parseFloat(sessData.cash_balance || 0)
+              });
+            }
+          })
+          .catch(err => console.error("Error fetching cashier session on load:", err));
+        setCashierPin(storedPin || '');
       }
-      setLoadingSession(false);
     }
-  }, [isMasterHost, resolveTenant]);
+    setLoadingSession(false);
+  }, [isMasterHost, isStoreMode, resolveTenant]);
 
   // Load device authentication and cashier session from localStorage / Supabase session
   useEffect(() => {
@@ -1010,7 +1020,7 @@ export default function App() {
 
     // Listen for auth changes if in store/admin/master mode
     let subscription = null;
-    if (isMasterHost || currentMode === 'store' || currentMode === 'admin') {
+    if (isMasterHost || isStoreMode) {
       const { data } = supabase.auth.onAuthStateChange(async (_event, currentSession) => {
         if (isMasterHost && currentSession && currentSession.user?.email !== 'superadmin@cashmint.online') {
           await supabase.auth.signOut();
@@ -1019,6 +1029,7 @@ export default function App() {
         }
         setSession(currentSession);
         if (currentSession) {
+          setIsCheckingStore(true);
           // Clear Stale Storage on User Switch
           const storedUserId = localStorage.getItem('current_user_id');
           if (storedUserId && storedUserId !== currentSession.user.id) {
@@ -1058,11 +1069,14 @@ export default function App() {
             }
           } catch (err) {
             console.error("Error fetching store on auth change:", err);
+          } finally {
+            setIsCheckingStore(false);
           }
         } else {
           setStore(null);
           setUserRole('cashier');
           localStorage.removeItem('current_user_id');
+          setIsCheckingStore(false);
         }
       });
       subscription = data?.subscription || null;
@@ -1825,9 +1839,9 @@ export default function App() {
 
     // Cleanly clear all terminal, cashier, and shift-related data from local storage
     const keysToRemove = [
-      'device_id', 'current_device_id', 'store_id', 'device_name', 
-      'cashier_session_id', 'active_shift_id', 'cashier_name', 
-      'cashier_opening_balance', 'cashier_pin', 'pin', 
+      'device_id', 'current_device_id', 'store_id', 'device_name',
+      'cashier_session_id', 'active_shift_id', 'cashier_name',
+      'cashier_opening_balance', 'cashier_pin', 'pin',
       'lockout_stage', 'failed_attempts', 'lockout_until',
       'current_store_name', 'current_store_logo', 'pos_menu_items'
     ];
@@ -2265,7 +2279,7 @@ export default function App() {
           {isArabic ? "تم إيقاف جهاز الكاشير من الإدارة" : "This cashier device has been disabled by management"}
         </h1>
         <p className="text-sm text-slate-300 max-w-md leading-relaxed font-medium">
-          {isArabic 
+          {isArabic
             ? "تم تعليق هذا الجهاز مؤقتاً بواسطة مدير النظام. يرجى التواصل مع الإدارة لإعادة تفعيل الجهاز."
             : "This device has been temporarily suspended by system management. Please contact administration to restore access."
           }
@@ -2285,8 +2299,8 @@ export default function App() {
           {isArabic ? "النظام قيد الصيانة" : "System Under Maintenance"}
         </h2>
         <p className="text-slate-400 text-sm max-w-sm mb-6">
-          {isArabic 
-            ? "يخضع النظام لعملية صيانة مجدولة لتحسين الأداء والأمان. يرجى معاودة المحاولة لاحقاً." 
+          {isArabic
+            ? "يخضع النظام لعملية صيانة مجدولة لتحسين الأداء والأمان. يرجى معاودة المحاولة لاحقاً."
             : "The system is currently undergoing scheduled maintenance to improve performance and security. Please check back later."}
         </p>
         <div className="text-xs text-slate-500 border-t border-slate-800 pt-4 w-full max-w-xs font-mono uppercase tracking-wider">
@@ -2296,8 +2310,21 @@ export default function App() {
     );
   }
 
-  // Master or Store / Admin Mode Conditional Return
-  if (isMasterHost || currentMode === 'store' || currentMode === 'admin') {
+  // Master or Store Mode Conditional Return
+  if (isMasterHost || isStoreMode) {
+    if (loadingSession || isCheckingStore) {
+      return (
+        <div dir="rtl" className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 font-sans">
+          <div className="text-center space-y-4">
+            <div className="w-10 h-10 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin mx-auto" />
+            <p className="text-xs font-bold text-slate-400 dark:text-slate-500">
+              {isArabic ? "جاري التحقق من الهوية..." : "Verifying identity..."}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     if (!session) {
       return <BackOfficeLogin />;
     }
@@ -2344,55 +2371,6 @@ export default function App() {
           </div>
         }>
           <SuperAdminDashboard session={session} setView={setView} />
-        </React.Suspense>
-      );
-    }
-    return (
-      <StoreThemeProvider store={store}><AdminDashboard
-        store={store}
-        setStore={setStore}
-        session={session}
-        setView={handleSetView}
-        showNotification={showNotification}
-        isArabic={isArabic}
-        setIsArabic={setIsArabic}
-        theme={theme}
-        setTheme={setTheme}
-      /></StoreThemeProvider>
-    );
-  }
-
-  // Also bypass POS checks and render AdminDashboard if logged in as admin in POS mode
-  if (session && userRole === 'admin') {
-    if (!isStoreOnboarded(store)) {
-      return (
-        <React.Suspense fallback={
-          <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-            <div className="w-10 h-10 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin" />
-          </div>
-        }>
-          <OnboardingWizard
-            storeId={store?.id || null}
-            isArabic={isArabic}
-            onComplete={(updatedStore) => {
-              // Clear stale POS keys
-              const keysToRemove = [
-                'device_id', 'cashier_session_id', 'cashier_name',
-                'pos_menu_items', 'cashier_opening_balance', 'cashier_pin',
-                'pin', 'lockout_stage', 'failed_attempts', 'lockout_until'
-              ];
-              keysToRemove.forEach(key => localStorage.removeItem(key));
-
-              setStore(updatedStore);
-              setUserRole('admin');
-              if (updatedStore) {
-                localStorage.setItem('store_id', updatedStore.id);
-                localStorage.setItem('current_store_name', updatedStore.name || '');
-                localStorage.setItem('current_store_logo', updatedStore.logo_url || '');
-              }
-              fetchPOSCatalogData(updatedStore);
-            }}
-          />
         </React.Suspense>
       );
     }
@@ -2542,10 +2520,10 @@ export default function App() {
         {/* Left Side: Brand Logo and Title */}
         <div className="flex items-center gap-3">
           {store?.logo_url || localStorage.getItem("current_store_logo") ? (
-            <img 
-              src={store?.logo_url || localStorage.getItem("current_store_logo")} 
-              alt={store ? store.name : 'Store Logo'} 
-              className="w-10 h-10 rounded-xl object-contain shadow-md shrink-0 border border-slate-150 dark:border-slate-700 bg-white" 
+            <img
+              src={store?.logo_url || localStorage.getItem("current_store_logo")}
+              alt={store ? store.name : 'Store Logo'}
+              className="w-10 h-10 rounded-xl object-contain shadow-md shrink-0 border border-slate-150 dark:border-slate-700 bg-white"
             />
           ) : (
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-650 flex items-center justify-center text-white font-black text-xl shadow-md shrink-0">
@@ -2674,6 +2652,8 @@ export default function App() {
               ) : (
                 categories.map(cat => {
                   const isActive = selectedCategoryId === cat.id;
+                  const hasAr = Boolean(cat.name_ar && cat.name_ar.trim());
+                  const displayName = isArabic ? (hasAr ? cat.name_ar.trim() : cat.name) : cat.name;
                   return (
                     <button
                       key={cat.id}
@@ -2686,7 +2666,9 @@ export default function App() {
                       <span className={`shrink-0 ${isActive ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`}>
                         {getCategoryIcon(cat.name)}
                       </span>
-                      <span className="truncate flex-1 font-bold text-right">{t(cat.name)}</span>
+                      <span className="truncate flex-1 font-bold text-right text-sm leading-tight">
+                        {displayName}
+                      </span>
                     </button>
                   );
                 })
@@ -2745,6 +2727,11 @@ export default function App() {
                     const catStyles = getProductCategoryStyles(productCategoryName);
 
                     const isCompact = productCardSize === 'compact';
+                    const hasArabic = Boolean(product.name_ar && product.name_ar.trim());
+
+                    const mainTitle = (isArabic && hasArabic) ? product.name_ar.trim() : product.name;
+                    const subTitle = (isArabic && hasArabic) ? product.name : (hasArabic ? product.name_ar.trim() : null);
+
                     return (
                       <button
                         key={product.id}
@@ -2752,11 +2739,17 @@ export default function App() {
                         className={`border rounded-2xl cursor-pointer active:scale-[0.97] transition-all flex flex-col items-center justify-center text-center relative select-none ${isCompact ? 'h-24 p-2.5' : 'h-32 p-4'
                           } ${catStyles.border} ${catStyles.bg}`}
                       >
-                        <span className={`text-slate-850 dark:text-white leading-snug line-clamp-2 px-1 ${isCompact ? 'text-xs md:text-sm font-bold mb-0.5' : 'font-extrabold text-base md:text-lg mb-1'
+                        <span className={`text-slate-850 dark:text-white leading-snug line-clamp-1 px-1 ${isCompact ? 'text-xs md:text-sm font-bold' : 'font-extrabold text-base md:text-lg'
                           }`}>
-                          {product.name}
+                          {mainTitle}
                         </span>
-                        <span className={`font-black ${catStyles.accent} ${isCompact ? 'text-sm mt-0.5' : 'text-base mt-1.5'
+                        {subTitle && (
+                          <span className={`text-amber-600 dark:text-amber-400 font-semibold line-clamp-1 opacity-90 px-1 ${isCompact ? 'text-[10px]' : 'text-xs mt-0.5'
+                            }`}>
+                            {subTitle}
+                          </span>
+                        )}
+                        <span className={`font-black ${catStyles.accent} ${isCompact ? 'text-sm mt-0.5' : 'text-base mt-1'
                           }`}>
                           {parseFloat(product.price).toFixed(2)} €
                         </span>
@@ -2985,8 +2978,8 @@ export default function App() {
                 {t('dine_in') === 'صالة' ? 'نقداً' : 'Cash'}
               </button>
               <button
-              onClick={() => setPaymentMethod('card')}
-              className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all ${paymentMethod === 'card'
+                onClick={() => setPaymentMethod('card')}
+                className={`flex-1 py-1.5 text-[11px] font-bold rounded-lg transition-all ${paymentMethod === 'card'
                   ? 'bg-amber-500 text-white shadow-sm'
                   : 'text-slate-555 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-250'} ${terminalAvailability.checked && !terminalAvailability.available ? 'opacity-70'
                     : ''
@@ -3382,8 +3375,8 @@ export default function App() {
 
               <div className="text-right py-2">
                 <p className="text-sm font-semibold text-slate-600 dark:text-slate-350">
-                  {isArabic 
-                    ? "هل أنت متأكد من رغبتك في تسليم الوردية وإغلاق الصندوق؟" 
+                  {isArabic
+                    ? "هل أنت متأكد من رغبتك في تسليم الوردية وإغلاق الصندوق؟"
                     : "Are you sure you want to end this shift and close the cash drawer?"}
                 </p>
               </div>
@@ -3583,7 +3576,7 @@ function BackOfficeLogin() {
   const [errorMsg, setErrorMsg] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  const isDeletedError = typeof window !== 'undefined' && 
+  const isDeletedError = typeof window !== 'undefined' &&
     (new URLSearchParams(window.location.search).get('error') === 'deleted');
   const isAr = localStorage.getItem('app_language') === 'ar';
 
@@ -3625,12 +3618,12 @@ function BackOfficeLogin() {
 
   return (
     <div className={`min-h-screen flex flex-col items-center justify-center bg-gradient-to-br px-4 font-sans select-none text-slate-100 ${isMasterHost
-        ? 'from-slate-955 via-slate-900 to-slate-955'
-        : 'from-slate-900 via-slate-800 to-slate-955'
+      ? 'from-slate-955 via-slate-900 to-slate-955'
+      : 'from-slate-900 via-slate-800 to-slate-955'
       }`}>
       <div className={`max-w-md w-full backdrop-blur-2xl rounded-3xl border shadow-2xl p-8 space-y-8 relative overflow-hidden ${isMasterHost
-          ? 'bg-slate-900/40 border-slate-800/80'
-          : 'bg-slate-900/60 border-slate-800'
+        ? 'bg-slate-900/40 border-slate-800/80'
+        : 'bg-slate-900/60 border-slate-800'
         }`}>
 
         {/* Decorative background glows for master theme */}
@@ -3644,16 +3637,16 @@ function BackOfficeLogin() {
         {/* Branding header */}
         <div className="text-center space-y-4">
           <div className={`inline-flex items-center justify-center px-6 py-2.5 rounded-2xl font-black tracking-wider text-xs shadow-lg uppercase border ${isMasterHost
-              ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-cyan-500/15 border-cyan-500/20'
-              : 'bg-amber-500 text-white shadow-amber-500/20 border-amber-400/20'
+            ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-cyan-500/15 border-cyan-500/20'
+            : 'bg-amber-500 text-white shadow-amber-500/20 border-amber-400/20'
             }`}>
             {isMasterHost ? "CASHMINT MASTER CENTRAL" : "CASHMINT BACKOFFICE"}
           </div>
 
           <div className="flex flex-col items-center gap-2 mt-2">
             <div className={`w-12 h-12 rounded-2xl border flex items-center justify-center shadow-inner relative ${isMasterHost
-                ? 'bg-slate-800/80 border-slate-700/50 text-cyan-400'
-                : 'bg-slate-800/60 border-slate-700/40 text-amber-500'
+              ? 'bg-slate-800/80 border-slate-700/50 text-cyan-400'
+              : 'bg-slate-800/60 border-slate-700/40 text-amber-500'
               }`}>
               {/* Subtle pulse ring effect */}
               <span className={`absolute inset-0 rounded-2xl border animate-ping opacity-75 ${isMasterHost ? 'border-cyan-500/30' : 'border-amber-500/30'
@@ -3675,7 +3668,7 @@ function BackOfficeLogin() {
             <AlertCircle className="w-5 h-5 flex-shrink-0" />
             <span>
               {isAr
-                ? "لقد تم إيقاف أو حذف الحساب من قبل الشركة، برجاء التواصل مع الدعم." 
+                ? "لقد تم إيقاف أو حذف الحساب من قبل الشركة، برجاء التواصل مع الدعم."
                 : "This account has been suspended or deleted by the company. Please contact support."}
             </span>
           </div>
@@ -3704,8 +3697,8 @@ function BackOfficeLogin() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className={`w-full pl-11 pr-4 py-3.5 bg-slate-950/50 border border-slate-800 rounded-2xl text-white placeholder-slate-600 outline-none transition-all text-sm font-medium ${isMasterHost
-                    ? 'focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50'
-                    : 'focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50'
+                  ? 'focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50'
+                  : 'focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50'
                   }`}
               />
             </div>
@@ -3726,8 +3719,8 @@ function BackOfficeLogin() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className={`w-full pl-11 pr-12 py-3.5 bg-slate-950/50 border border-slate-800 rounded-2xl text-white placeholder-slate-600 outline-none transition-all text-sm font-medium ${isMasterHost
-                    ? 'focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50'
-                    : 'focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50'
+                  ? 'focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50'
+                  : 'focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50'
                   }`}
               />
               <button
@@ -3744,8 +3737,8 @@ function BackOfficeLogin() {
             type="submit"
             disabled={loading}
             className={`w-full py-4 text-white font-extrabold text-sm rounded-2xl shadow-xl transition-all active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer border ${isMasterHost
-                ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-cyan-600/50 disabled:to-blue-600/50 shadow-cyan-500/10 border-cyan-500/10'
-                : 'bg-amber-500 hover:bg-amber-600 disabled:bg-amber-500/50 shadow-amber-500/10 border-amber-500/10'
+              ? 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-cyan-600/50 disabled:to-blue-600/50 shadow-cyan-500/10 border-cyan-500/10'
+              : 'bg-amber-500 hover:bg-amber-600 disabled:bg-amber-500/50 shadow-amber-500/10 border-amber-500/10'
               }`}
           >
             {loading ? (
