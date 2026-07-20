@@ -568,12 +568,22 @@ export default function App() {
     let alive = true;
     const check = async () => {
       const { data, error } = await supabase.rpc('terminal_payment_availability', { p_store_id: storeId, p_pos_device_id: deviceId || null });
-      if (alive) setTerminalAvailability({
-        checked: true,
-        available: !error && data?.available === true,
-        readerOnline: !error && data?.reader_online === true,
-        activePayment: !error && data?.active_payment === true
-      });
+      if (alive) {
+        setTerminalAvailability(prev => {
+          const nextAvailable = !error && data?.available === true;
+          const nextReaderOnline = !error && data?.reader_online === true;
+          const nextActivePayment = !error && data?.active_payment === true;
+          if (prev.checked && prev.available === nextAvailable && prev.readerOnline === nextReaderOnline && prev.activePayment === nextActivePayment) {
+            return prev;
+          }
+          return {
+            checked: true,
+            available: nextAvailable,
+            readerOnline: nextReaderOnline,
+            activePayment: nextActivePayment
+          };
+        });
+      }
     };
     check();
     const interval = setInterval(check, 5000);

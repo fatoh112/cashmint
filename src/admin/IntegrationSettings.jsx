@@ -63,10 +63,12 @@ export default function IntegrationSettings({ store, setStore, showNotification,
     }
   };
 
-  const fetchDevicesAndSessions = useCallback(async () => {
+  const fetchDevicesAndSessions = useCallback(async (isSilent = false) => {
     if (!store?.id) return;
     try {
-      setLoadingMonitor(true);
+      if (!isSilent) {
+        setLoadingMonitor(prev => devices.length === 0 ? true : prev);
+      }
       const { data: devs, error: devsErr } = await supabase
         .from('pos_devices')
         .select('*')
@@ -113,32 +115,32 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   }, [store?.id]);
 
   useEffect(() => {
-    if (!store) return;
-    fetchDevicesAndSessions();
+    if (!store?.id) return;
+    fetchDevicesAndSessions(false);
 
     const channel = supabase
-      .channel('backoffice-device-monitor')
+      .channel(`backoffice-device-monitor-${store.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'pos_devices' },
-        () => { fetchDevicesAndSessions(); }
+        { event: '*', schema: 'public', table: 'pos_devices', filter: `store_id=eq.${store.id}` },
+        () => { fetchDevicesAndSessions(true); }
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'cashier_sessions' },
-        () => { fetchDevicesAndSessions(); }
+        () => { fetchDevicesAndSessions(true); }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'terminal_devices' },
-        () => { fetchDevicesAndSessions(); }
+        { event: '*', schema: 'public', table: 'terminal_devices', filter: `location_id=eq.${store.id}` },
+        () => { fetchDevicesAndSessions(true); }
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [store, fetchDevicesAndSessions]);
+  }, [store?.id]);
 
   const generateActivationCode = async (e) => {
     e.preventDefault();

@@ -45,10 +45,12 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     price_adjustment: '0.00'
   });
 
-  const fetchCatalog = useCallback(async () => {
-    if (!store) return;
+  const fetchCatalog = useCallback(async (isSilent = false) => {
+    if (!store?.id) return;
     try {
-      setLoading(true);
+      if (!isSilent) {
+        setLoading(prev => categories.length === 0 && products.length === 0 ? true : prev);
+      }
       
       // Fetch Categories
       const { data: cats, error: catsErr } = await supabase
@@ -87,7 +89,7 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
     } finally {
       setLoading(false);
     }
-  }, [store, isArabic, showNotification]);
+  }, [store?.id, isArabic, showNotification]);
 
   const accountingGroupLabel = (group) => {
     const profile = group.tax_profiles;
@@ -101,10 +103,10 @@ export default function CatalogManagement({ store, showNotification, isArabic, o
   const defaultGroupId = accountingGroups.find(g => g.is_default)?.id || '';
 
   useEffect(() => {
-    if (store) {
-      fetchCatalog();
+    if (store?.id) {
+      fetchCatalog(false);
     }
-  }, [store, fetchCatalog]);
+  }, [store?.id]);
 
   // --- Category CRUD ---
   const handleSaveCategory = async (e) => {

@@ -37,10 +37,12 @@ export default function ItemsDashboard({ store, showNotification, isArabic }) {
   // CSV Import Modal State
   const [csvModalOpen, setCsvModalOpen] = useState(false);
 
-  const loadData = useCallback(async () => {
-    if (!store) return;
+  const loadData = useCallback(async (isSilent = false) => {
+    if (!store?.id) return;
     try {
-      setLoading(true);
+      if (!isSilent) {
+        setLoading(prev => items.length === 0 ? true : prev);
+      }
 
       // Fetch Categories for this store only
       const { data: cats } = await supabase
@@ -76,13 +78,13 @@ export default function ItemsDashboard({ store, showNotification, isArabic }) {
     } finally {
       setLoading(false);
     }
-  }, [store, isArabic, showNotification]);
+  }, [store?.id, isArabic, showNotification]);
 
   useEffect(() => {
-    if (store) {
-      loadData();
+    if (store?.id) {
+      loadData(false);
     }
-  }, [store, loadData]);
+  }, [store?.id]);
 
 
   const handleDeleteItem = async (item) => {

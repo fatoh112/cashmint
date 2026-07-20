@@ -32,6 +32,7 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
   const headerLogoInputRef = useRef(null);
 
   useEffect(() => {
+    let isMounted = true;
     const verifyDatabaseAccount = async () => {
       try {
         const { data: { user }, error: userErr } = await supabase.auth.getUser();
@@ -59,26 +60,25 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
           }
         }
 
-        // If the query returns no store data (null), do not insert here. It will be handled by the Welcome Screen.
+        if (isMounted) {
+          // Update local store state if store ID changes or store is not set
+          if (storeRow && storeRow.id !== store?.id) {
+            setStore(storeRow);
+          }
 
-        // Update local store state if needed
-        if (JSON.stringify(storeRow) !== JSON.stringify(store)) {
-          setStore(storeRow);
+          // 3. Check if onboarding is completed
+          const isSetupIncomplete = !storeRow || 
+            !storeRow.business_type || 
+            storeRow.status === 'pending';
+
+          if (isSetupIncomplete) {
+            setIsOnboardingNeeded(true);
+          }
+
+          setDbChecking(false);
         }
-
-        // 3. Check if onboarding is completed
-        const isSetupIncomplete = !storeRow || 
-          !storeRow.business_type || 
-          storeRow.status === 'pending';
-
-        if (isSetupIncomplete) {
-          setIsOnboardingNeeded(true);
-        }
-
-        setDbChecking(false);
       } catch (err) {
         console.error("Strict database verification failed:", err);
-        // Clear all storage, sign out, and redirect
         localStorage.clear();
         sessionStorage.clear();
         localStorage.setItem('auth_error_reason', 'deleted');
@@ -93,10 +93,16 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
 
     if (session?.user?.email !== 'superadmin@cashmint.online') {
       verifyDatabaseAccount();
+    } else {
+      setDbChecking(false);
     }
-  }, [session, setStore, store]);
 
-  if (dbChecking && store) {
+    return () => {
+      isMounted = false;
+    };
+  }, [session?.user?.id, store?.id]);
+
+  if (dbChecking && !store) {
     return (
       <div dir={isArabic ? 'rtl' : 'ltr'} className="min-h-screen bg-slate-50 dark:bg-slate-900 flex items-center justify-center font-sans">
         <div className="text-center space-y-4">

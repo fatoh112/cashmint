@@ -15,14 +15,19 @@ import {
 export default function SalesHistory({ store, showNotification, isArabic }) {
   const [orders, setOrders] = useState([]);
   const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [_isBackgroundRefreshing, setIsBackgroundRefreshing] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderItemsMap, setOrderItemsMap] = useState({});
 
-  const fetchSalesData = useCallback(async () => {
-    if (!store) return;
+  const fetchSalesData = useCallback(async (isSilent = false) => {
+    if (!store?.id) return;
     try {
-      setLoading(true);
+      if (!isSilent) {
+        setLoading(prev => orders.length === 0 ? true : prev);
+      } else {
+        setIsBackgroundRefreshing(true);
+      }
 
       // Fetch products to map product_id to name
       const { data: prods } = await supabase
@@ -68,16 +73,17 @@ export default function SalesHistory({ store, showNotification, isArabic }) {
       showNotification(isArabic ? "خطأ في تحميل سجل المبيعات" : "Error loading sales history", "error");
     } finally {
       setLoading(false);
+      setIsBackgroundRefreshing(false);
     }
-  }, [store, isArabic, showNotification]);
+  }, [store?.id, isArabic, showNotification]);
 
   useEffect(() => {
-    if (store) {
-      fetchSalesData();
+    if (store?.id) {
+      fetchSalesData(false);
       
-      // Subscribe to real-time order updates
-      const subscription = supabase
-        .channel('sales-history-realtime')
+      // Subscribe to real-time order updates for this store
+      const channel = supabase
+        .channel(`sales-history-realtime-${store.id}`)
         .on(
           'postgres_changes',
           {
@@ -87,11 +93,10 @@ export default function SalesHistory({ store, showNotification, isArabic }) {
             filter: `store_id=eq.${store.id}`
           },
           (payload) => {
-            console.log('Sales history update:', payload);
             if (payload.eventType === 'INSERT') {
-              setOrders(prev => [payload.new, ...prev]);
+              setOrders(prev => [payload.new, ...prev.filter(o => o.id !== payload.new.id)]);
             } else if (payload.eventType === 'UPDATE') {
-              setOrders(prev => prev.map(o => o.id === payload.new.id ? payload.new : o));
+              setOrders(prev => prev.map(o => o.id === payload.new.id ? { ...o, ...payload.new } : o));
             } else if (payload.eventType === 'DELETE') {
               setOrders(prev => prev.filter(o => o.id !== payload.old.id));
             }
@@ -100,10 +105,10 @@ export default function SalesHistory({ store, showNotification, isArabic }) {
         .subscribe();
 
       return () => {
-        supabase.removeChannel(subscription);
+        supabase.removeChannel(channel);
       };
     }
-  }, [store, fetchSalesData]);
+  }, [store?.id]);
 
   // Analytics Computations
   const completedOrders = orders.filter(o => o.status === 'completed' || o.status === 'new');
