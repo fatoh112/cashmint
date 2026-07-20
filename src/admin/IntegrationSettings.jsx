@@ -26,6 +26,7 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   const [testingPrinter, setTestingPrinter] = useState(false);
 
   // Device Monitor & Activation States
+  const [deviceTab, setDeviceTab] = useState('pos'); // 'pos' | 'payment'
   const [devices, setDevices] = useState([]);
   const [terminalDevices, setTerminalDevices] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -78,13 +79,27 @@ export default function IntegrationSettings({ store, setStore, showNotification,
       if (devsErr) throw devsErr;
       setDevices(devs || []);
 
-      const { data: terminals, error: terminalErr } = await supabase
-        .from('terminal_devices')
-        .select('id, display_name, status, reader_status, last_heartbeat_at, current_payment_request_id, app_version')
-        .eq('location_id', store.id)
-        .order('created_at', { ascending: false });
-      if (terminalErr) throw terminalErr;
-      setTerminalDevices(terminals || []);
+      // Resolve actual restaurant_locations IDs for current store
+      const { data: locs, error: locsErr } = await supabase
+        .from('restaurant_locations')
+        .select('id')
+        .or(`store_id.eq.${store.id},id.eq.${store.id}`);
+
+      if (locsErr) throw locsErr;
+
+      const locationIds = Array.from(new Set((locs || []).map(l => l.id).filter(Boolean)));
+
+      if (locationIds.length > 0) {
+        const { data: terminals, error: terminalErr } = await supabase
+          .from('terminal_devices')
+          .select('id, display_name, status, reader_status, last_heartbeat_at, current_payment_request_id, app_version, location_id')
+          .in('location_id', locationIds)
+          .order('created_at', { ascending: false });
+        if (terminalErr) throw terminalErr;
+        setTerminalDevices(terminals || []);
+      } else {
+        setTerminalDevices([]);
+      }
 
       if (devs && devs.length > 0) {
         const deviceIds = devs.map(d => d.id);
@@ -118,29 +133,53 @@ export default function IntegrationSettings({ store, setStore, showNotification,
     if (!store?.id) return;
     fetchDevicesAndSessions(false);
 
-    const channel = supabase
-      .channel(`backoffice-device-monitor-${store.id}`)
-      .on(
+    let isMounted = true;
+    let channel = null;
+
+    const setupSubscriptions = async () => {
+      const { data: locs } = await supabase
+        .from('restaurant_locations')
+        .select('id')
+        .or(`store_id.eq.${store.id},id.eq.${store.id}`);
+
+      if (!isMounted) return;
+
+      const locationIds = Array.from(new Set((locs || []).map(l => l.id).filter(Boolean)));
+
+      channel = supabase.channel(`backoffice-device-monitor-${store.id}`);
+
+      channel.on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'pos_devices', filter: `store_id=eq.${store.id}` },
         () => { fetchDevicesAndSessions(true); }
-      )
-      .on(
+      );
+
+      channel.on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'cashier_sessions' },
         () => { fetchDevicesAndSessions(true); }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'terminal_devices', filter: `location_id=eq.${store.id}` },
-        () => { fetchDevicesAndSessions(true); }
-      )
-      .subscribe();
+      );
+
+      locationIds.forEach(locId => {
+        channel.on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'terminal_devices', filter: `location_id=eq.${locId}` },
+          () => { fetchDevicesAndSessions(true); }
+        );
+      });
+
+      channel.subscribe();
+    };
+
+    setupSubscriptions();
 
     return () => {
-      supabase.removeChannel(channel);
+      isMounted = false;
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
     };
-  }, [store?.id]);
+  }, [store?.id, fetchDevicesAndSessions]);
 
   const generateActivationCode = async (e) => {
     e.preventDefault();
@@ -151,43 +190,24 @@ export default function IntegrationSettings({ store, setStore, showNotification,
 
     try {
       setGeneratingCode(true);
-      let uniqueCode = '';
-      let isUnique = false;
+      const { data, error } = await supabase.rpc('generate_pos_activation_code', {
+        p_store_id: store.id,
+        p_device_name: deviceName.trim(),
+        p_expiry_minutes: 15
+      });
 
-      while (!isUnique) {
-        uniqueCode = Math.floor(100000 + Math.random() * 900000).toString();
-
-        const { data, error } = await supabase
-          .from('pos_devices')
-          .select('id')
-          .eq('activation_code', uniqueCode)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (!data) {
-          isUnique = true;
-        }
+      if (error) throw error;
+      if (!data?.success) {
+        throw new Error(data?.error || (isArabic ? 'فشل إنشاء كود التفعيل' : 'Failed to generate code'));
       }
 
-      const { error: insertError } = await supabase
-        .from('pos_devices')
-        .insert({
-          store_id: store.id,
-          device_name: deviceName.trim(),
-          activation_code: uniqueCode,
-          status: 'active',
-          last_active_at: new Date().toISOString()
-        });
-
-      if (insertError) throw insertError;
-
-      setLatestCode(uniqueCode);
+      setLatestCode(data.activation_code);
       setDeviceName('');
-      showNotification(isArabic ? "تم إنشاء رمز التفعيل بنجاح!" : "Activation code generated successfully!", "success");
+      showNotification(isArabic ? "تم إنشاء رمز التفعيل بنجاح! ينتهي خلال 15 دقيقة." : "Activation code generated! Expires in 15 minutes.", "success");
       fetchDevicesAndSessions();
     } catch (err) {
       console.error("Error generating activation code:", err);
-      showNotification(isArabic ? "فشل إنشاء رمز التفعيل" : "Failed to generate activation code", "error");
+      showNotification(err.message || (isArabic ? "فشل إنشاء رمز التفعيل" : "Failed to generate activation code"), "error");
     } finally {
       setGeneratingCode(false);
     }
@@ -213,23 +233,55 @@ export default function IntegrationSettings({ store, setStore, showNotification,
 
   const handleToggleDeviceStatus = async (deviceId, currentStatus) => {
     try {
-      const nextStatus = currentStatus === 'active' ? 'revoked' : 'active';
-      const { error } = await supabase
-        .from('pos_devices')
-        .update({ status: nextStatus })
-        .eq('id', deviceId);
+      const nextStatus = currentStatus === 'active' ? 'disabled' : 'active';
+      const { data, error } = await supabase.rpc('set_pos_device_status', {
+        p_device_id: deviceId,
+        p_new_status: nextStatus,
+        p_store_id: store.id
+      });
 
       if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Failed to update device status');
+
       showNotification(
         isArabic 
-          ? (nextStatus === 'revoked' ? "تم إيقاف تفعيل الجهاز بنجاح" : "تم تفعيل الجهاز بنجاح")
-          : (nextStatus === 'revoked' ? "Device deactivated successfully" : "Device activated successfully"),
+          ? (nextStatus === 'disabled' ? "تم إيقاف تفعيل الجهاز بنجاح" : "تم تفعيل الجهاز بنجاح")
+          : (nextStatus === 'disabled' ? "Device disabled successfully" : "Device activated successfully"),
         "success"
       );
       fetchDevicesAndSessions();
     } catch (err) {
       console.error("Error updating device status:", err);
-      showNotification(isArabic ? "فشل تحديث حالة الجهاز" : "Failed to update device status", "error");
+      showNotification(err.message || (isArabic ? "فشل تحديث حالة الجهاز" : "Failed to update device status"), "error");
+    }
+  };
+
+  const handleRevokeDevice = async (deviceId) => {
+    const confirmRevoke = window.confirm(
+      isArabic
+        ? "هل أنت متأكد من إلغاء تفعيل (Revoke) هذا الجهاز نهائياً؟ سيحتاج الجهاز إلى كود تفعيل جديد."
+        : "Are you sure you want to revoke this device permanently? The device will require a new activation code."
+    );
+    if (!confirmRevoke) return;
+
+    try {
+      const { data, error } = await supabase.rpc('set_pos_device_status', {
+        p_device_id: deviceId,
+        p_new_status: 'revoked',
+        p_store_id: store.id
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Failed to revoke device');
+
+      showNotification(
+        isArabic ? "تم إلغاء تفعيل الجهاز نهائياً" : "Device revoked successfully",
+        "success"
+      );
+      fetchDevicesAndSessions();
+    } catch (err) {
+      console.error("Error revoking device:", err);
+      showNotification(err.message || (isArabic ? "فشل إلغاء تفعيل الجهاز" : "Failed to revoke device"), "error");
     }
   };
 
@@ -285,6 +337,26 @@ export default function IntegrationSettings({ store, setStore, showNotification,
     } catch (err) {
       console.error("Error deleting shift:", err);
       showNotification(isArabic ? "فشل حذف الوردية" : "Failed to delete shift", "error");
+    }
+  };
+
+  const handleClearTerminalRequest = async (terminalId) => {
+    try {
+      const { error } = await supabase
+        .from('terminal_devices')
+        .update({ current_payment_request_id: null })
+        .eq('id', terminalId)
+        .eq('location_id', store.id);
+
+      if (error) throw error;
+      showNotification(
+        isArabic ? "تم تفريغ طلب الدفع المعلق بنجاح" : "Stale payment request cleared successfully",
+        "success"
+      );
+      fetchDevicesAndSessions(true);
+    } catch (err) {
+      console.error("Error clearing payment request:", err);
+      showNotification(isArabic ? "فشل تفريغ طلب الدفع" : "Failed to clear payment request", "error");
     }
   };
 
@@ -675,113 +747,191 @@ export default function IntegrationSettings({ store, setStore, showNotification,
           </div>
 
           {/* 2. LIVE DEVICE STATUS MONITOR */}
-          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700/60 shadow-sm p-6 space-y-4 text-right flex flex-col h-[350px]">
-            <div className="flex items-center gap-3 border-b border-slate-50 dark:border-slate-750 pb-3 shrink-0 text-slate-855">
-              <div className="p-2 bg-emerald-50 dark:bg-emerald-955/20 rounded-xl text-emerald-500">
-                <Tv className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="font-extrabold text-sm dark:text-white">{isArabic ? "مراقبة الأجهزة الحية" : "Live Device Status"}</h3>
-                <p className="text-[10px] text-slate-400 font-bold">POS terminal network heartbeat</p>
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700/60 shadow-sm p-6 space-y-4 text-right flex flex-col h-[400px]">
+            <div className="flex items-center justify-between border-b border-slate-50 dark:border-slate-750 pb-3 shrink-0">
+              <div className="flex items-center gap-3 text-slate-855">
+                <div className="p-2 bg-emerald-50 dark:bg-emerald-955/20 rounded-xl text-emerald-500">
+                  <Tv className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm dark:text-white">{isArabic ? "مراقبة الأجهزة الحية" : "Live Device Status"}</h3>
+                  <p className="text-[10px] text-slate-400 font-bold">{isArabic ? "مراقبة شبكة أجهزة الكاشير وأجهزة الدفع" : "POS and payment terminal network status"}</p>
+                </div>
               </div>
             </div>
 
+            {/* TAB SWITCHER */}
+            <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl shrink-0 gap-1">
+              <button
+                type="button"
+                onClick={() => setDeviceTab('pos')}
+                className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  deviceTab === 'pos'
+                    ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+                }`}
+              >
+                {isArabic ? `أجهزة الكاشير (${devices.length})` : `Cashier POS Devices (${devices.length})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeviceTab('payment')}
+                className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                  deviceTab === 'payment'
+                    ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+                }`}
+              >
+                {isArabic ? `أجهزة الدفع (${terminalDevices.length})` : `Payment Devices (${terminalDevices.length})`}
+              </button>
+            </div>
+
+            {/* DEVICE LIST */}
             <div className="flex-1 overflow-y-auto space-y-3 no-scrollbar pr-1">
-              {terminalDevices.map(device => {
-                const heartbeatMs = device.last_heartbeat_at ? Date.now() - new Date(device.last_heartbeat_at).getTime() : Number.POSITIVE_INFINITY;
-                const online = heartbeatMs < 60000 && device.status === 'online';
-                return (
-                  <div
-                    key={`terminal-${device.id}`}
-                    className="p-3 bg-emerald-50/50 dark:bg-emerald-950/10 border border-emerald-100 dark:border-emerald-900/30 rounded-xl flex items-center justify-between gap-3 text-right"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                        <h4 className="font-extrabold text-xs text-slate-800 dark:text-slate-200">{device.display_name}</h4>
-                      </div>
-                      <p className="text-[9px] font-mono text-slate-500 dark:text-slate-400">
-                        {device.reader_status} · {device.current_payment_request_id ? 'payment active' : 'idle'} · v{device.app_version || 'unknown'}
-                      </p>
-                    </div>
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${online ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                      {online ? (isArabic ? "متصل" : "Bridge online") : (isArabic ? "غير متصل" : "Bridge offline")}
-                    </span>
+              {/* TAB 1: CASHIER POS DEVICES */}
+              {deviceTab === 'pos' && (
+                devices.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
+                    <Tv className="w-8 h-8 mb-2 opacity-30" />
+                    <p className="text-xs font-bold">{isArabic ? "لا توجد أجهزة كاشير مسجلة" : "No cashier POS devices registered"}</p>
                   </div>
-                );
-              })}
-              {devices.length === 0 && terminalDevices.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
-                  <Tv className="w-8 h-8 mb-2 opacity-30" />
-                  <p className="text-xs font-bold">{isArabic ? "لا توجد أجهزة مسجلة بعد" : "No devices registered yet"}</p>
-                </div>
-              ) : (
-                devices.map(device => {
-                  const online = isDeviceOnline(device.last_active_at) && device.status === 'active';
-                  return (
-                    <div 
-                      key={device.id}
-                      className="p-3 bg-slate-50/50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-750 rounded-xl flex items-center justify-between gap-3 text-right"
-                    >
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className={`w-2 h-2 rounded-full ${
-                            device.status === 'revoked'
-                              ? 'bg-rose-500'
-                              : online
-                                ? 'bg-emerald-500 animate-pulse shadow-sm shadow-emerald-500/50'
-                                : 'bg-slate-400'
-                          }`} />
-                          <h4 className="font-extrabold text-xs text-slate-800 dark:text-slate-200">
-                            {device.device_name}
-                          </h4>
+                ) : (
+                  devices.map(device => {
+                    const online = isDeviceOnline(device.last_active_at) && device.status === 'active';
+                    const activeSession = sessions.find(s => s.device_id === device.id && s.status === 'open');
+
+                    return (
+                      <div 
+                        key={`pos-${device.id}`}
+                        className="p-3 bg-slate-50/50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-750 rounded-xl flex items-center justify-between gap-3 text-right"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${
+                              device.status === 'revoked'
+                                ? 'bg-rose-500'
+                                : online
+                                  ? 'bg-emerald-500 animate-pulse shadow-sm shadow-emerald-500/50'
+                                  : 'bg-slate-400'
+                            }`} />
+                            <h4 className="font-extrabold text-xs text-slate-800 dark:text-slate-200">
+                              {device.device_name}
+                            </h4>
+                          </div>
+                          <p className="text-[9px] font-mono text-slate-500 dark:text-slate-400">
+                            {isArabic ? 'الكود' : 'Code'}: {device.activation_code}
+                            {activeSession && ` · ${isArabic ? 'الوردية' : 'Shift'}: ${activeSession.cashier_name}`}
+                          </p>
                         </div>
-                        <p className="text-[9px] font-mono text-slate-500 dark:text-slate-400">
-                          {device.activation_code}
-                        </p>
+
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                            device.status === 'revoked'
+                              ? 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400'
+                              : online
+                                ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                          }`}>
+                            {device.status === 'revoked'
+                              ? (isArabic ? "موقوف" : "Disabled")
+                              : online
+                                ? (isArabic ? "متصل" : "Online")
+                                : (isArabic ? "غير متصل" : "Offline")
+                            }
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() => handleToggleDeviceStatus(device.id, device.status)}
+                            className={`p-1.5 rounded-lg border transition-all active:scale-95 cursor-pointer ${
+                              device.status === 'active'
+                                ? 'border-amber-200 hover:bg-amber-50 dark:border-amber-900/40 text-amber-600'
+                                : 'border-emerald-200 hover:bg-emerald-50 dark:border-emerald-900/40 text-emerald-500'
+                            }`}
+                            title={device.status === 'active' ? (isArabic ? "تعطيل مؤقت" : "Disable Device") : (isArabic ? "تفعيل الجهاز" : "Enable Device")}
+                          >
+                            <Power className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRevokeDevice(device.id)}
+                            className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 text-rose-500 transition-all active:scale-95 cursor-pointer"
+                            title={isArabic ? "إلغاء التفعيل نهائياً (Revoke)" : "Revoke Device"}
+                          >
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDevice(device.id)}
+                            className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 dark:border-slate-700/60 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition-all active:scale-95 cursor-pointer"
+                            title={isArabic ? "حذف الجهاز" : "Delete Device"}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
+                    );
+                  })
+                )
+              )}
 
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                          device.status === 'revoked'
-                            ? 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400'
-                            : online
-                              ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
-                        }`}>
-                          {device.status === 'revoked'
-                            ? (isArabic ? "موقوف" : "Revoked")
-                            : online
-                              ? (isArabic ? "متصل" : "Online")
-                              : (isArabic ? "غير متصل" : "Offline")
-                        }
-                        </span>
+              {/* TAB 2: PAYMENT DEVICES */}
+              {deviceTab === 'payment' && (
+                terminalDevices.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center p-4">
+                    <CreditCard className="w-8 h-8 mb-2 opacity-30" />
+                    <p className="text-xs font-bold">{isArabic ? "لا توجد أجهزة دفع مسجلة" : "No payment devices registered"}</p>
+                  </div>
+                ) : (
+                  terminalDevices.map(device => {
+                    const heartbeatMs = device.last_heartbeat_at ? Date.now() - new Date(device.last_heartbeat_at).getTime() : Number.POSITIVE_INFINITY;
+                    const online = heartbeatMs < 60000 && device.status !== 'disabled';
+                    const readerConnected = device.reader_status === 'connected';
 
-                        <button
-                          type="button"
-                          onClick={() => handleToggleDeviceStatus(device.id, device.status)}
-                          className={`p-1.5 rounded-lg border transition-all active:scale-95 cursor-pointer ${
-                            device.status === 'active'
-                              ? 'border-rose-200 hover:bg-rose-50 dark:border-rose-900/40 dark:hover:bg-rose-955/20 text-rose-500'
-                              : 'border-emerald-200 hover:bg-emerald-50 dark:border-emerald-900/40 dark:hover:bg-emerald-955/20 text-emerald-500'
-                          }`}
-                          title={device.status === 'active' ? (isArabic ? "إلغاء التنشيط / تسجيل الخروج" : "Deactivate / Force Logout") : (isArabic ? "تفعيل الجهاز" : "Activate Device")}
-                        >
-                          <Power className="w-3.5 h-3.5" />
-                        </button>
+                    return (
+                      <div
+                        key={`terminal-${device.id}`}
+                        className="p-3 bg-emerald-50/40 dark:bg-emerald-950/10 border border-emerald-100 dark:border-emerald-900/30 rounded-xl space-y-2 text-right"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                            <h4 className="font-extrabold text-xs text-slate-800 dark:text-slate-200">{device.display_name}</h4>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${online ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'}`}>
+                              {online ? (isArabic ? "الجسر متصل" : "Bridge online") : (isArabic ? "الجسر غير متصل" : "Bridge offline")}
+                            </span>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${readerConnected ? 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}`}>
+                              {readerConnected ? (isArabic ? "القارئ متصل" : "Reader connected") : (isArabic ? "القارئ غير متصل" : "Reader disconnected")}
+                            </span>
+                          </div>
+                        </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteDevice(device.id)}
-                          className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 dark:border-slate-700/60 dark:hover:bg-slate-750 text-slate-500 dark:text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition-all active:scale-95 cursor-pointer"
-                          title={isArabic ? "حذف الجهاز" : "Delete Device"}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center justify-between text-[9px] font-mono text-slate-500 dark:text-slate-400 pt-1 border-t border-emerald-100/60 dark:border-emerald-900/20">
+                          <span>v{device.app_version || 'unknown'}</span>
+                          {device.current_payment_request_id ? (
+                            <span className="text-amber-600 font-bold flex items-center gap-1">
+                              {isArabic ? "عملية دفع نشطة" : "Payment active"}
+                              <button
+                                type="button"
+                                onClick={() => handleClearTerminalRequest(device.id)}
+                                className="px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded font-sans text-[8px] hover:bg-amber-200 cursor-pointer"
+                                title={isArabic ? "تفريغ الطلب المعلق" : "Clear active request"}
+                              >
+                                {isArabic ? "إلغاء" : "Clear"}
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">{isArabic ? "خامل" : "Idle"}</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })
+                    );
+                  })
+                )
               )}
             </div>
           </div>

@@ -272,6 +272,7 @@ export default function App() {
   const [deviceAuth, setDeviceAuth] = useState(null); // { deviceId, storeId }
   const [activeCashierSession, setActiveCashierSession] = useState(null); // { id, cashierName, openingBalance }
   const [cashierPin, setCashierPin] = useState('');
+  const [isDeviceBlocked, setIsDeviceBlocked] = useState(false);
 
   const handleAccountDeleted = async () => {
     console.warn("Account or store record not found. Terminating session...");
@@ -1104,39 +1105,40 @@ export default function App() {
     };
   }, [deviceAuth?.deviceId, isArabic]);
 
-  // Periodic device deactivation check (safety fallback to real-time subscription)
+  // Periodic device heartbeat & remote disable control (every 20s)
   useEffect(() => {
     const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id');
+    const deviceToken = localStorage.getItem('device_token');
     if (!deviceId) return;
 
-    const checkDeviceStatus = async () => {
+    const checkDeviceHeartbeat = async () => {
       try {
-        const { data, error } = await supabase
-          .from('pos_devices')
-          .select('status')
-          .eq('id', deviceId)
-          .maybeSingle();
+        const { data, error } = await supabase.rpc('touch_pos_device_v2', {
+          p_device_id: deviceId,
+          p_device_token: deviceToken || null
+        });
 
         if (error) throw error;
-        if (!data || data.status !== 'active') {
-          showNotification(
-            isArabic 
-              ? "تم إلغاء تنشيط أو حذف هذا الجهاز من لوحة التحكم 🚫" 
-              : "This device has been deactivated or unlinked from back office 🚫", 
-            "error"
-          );
-          handleRemoteRevokeLogout();
+        if (!data || data.is_blocked || data.status !== 'active') {
+          setIsDeviceBlocked(true);
+          if (data?.status === 'revoked') {
+            localStorage.removeItem('device_id');
+            localStorage.removeItem('device_token');
+            localStorage.removeItem('device_name');
+            setDeviceAuth(null);
+          }
+        } else {
+          setIsDeviceBlocked(false);
         }
       } catch (err) {
-        console.error("Error checking device status:", err);
+        console.error("Error during device heartbeat:", err);
       }
     };
 
-    // Run immediately and then every 20 seconds
-    checkDeviceStatus();
-    const interval = setInterval(checkDeviceStatus, 20000);
+    checkDeviceHeartbeat();
+    const interval = setInterval(checkDeviceHeartbeat, 20000);
     return () => clearInterval(interval);
-  }, [deviceAuth?.deviceId, isArabic]);
+  }, [deviceAuth?.deviceId]);
 
   // Live Digital Clock Effect
   useEffect(() => {
@@ -2109,33 +2111,33 @@ export default function App() {
       setSetupLoading(true);
       setSetupError('');
 
-      // Insert cashier session row in database with metadata
-      const { data, error } = await supabase
-        .from('cashier_sessions')
-        .insert({
-          device_id: deviceAuth.deviceId,
-          cashier_name: cashierNameInput.trim(),
-          opening_balance: 0.00,
-          status: 'open',
-          opened_at: new Date().toISOString(),
-          metadata: { busy_level: busyLevelInput }
-        })
-        .select()
-        .single();
+      const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id');
+      const deviceToken = localStorage.getItem('device_token');
+
+      const { data: res, error } = await supabase.rpc('open_cashier_shift', {
+        p_device_id: deviceId,
+        p_device_token: deviceToken || null,
+        p_cashier_name: cashierNameInput.trim(),
+        p_opening_balance: parseFloat(openingBalanceInput) || 0.00,
+        p_cashier_user_id: session?.user?.id || null
+      });
 
       if (error) throw error;
+      if (!res?.success) {
+        throw new Error(res?.error || (isArabic ? 'فشل فتح الوردية.' : 'Error opening cashier session.'));
+      }
 
       // Save to localStorage
-      localStorage.setItem('cashier_session_id', data.id);
+      localStorage.setItem('cashier_session_id', res.session_id);
       localStorage.setItem('cashier_name', cashierNameInput.trim());
-      localStorage.setItem('cashier_opening_balance', '0.00');
+      localStorage.setItem('cashier_opening_balance', parseFloat(openingBalanceInput || 0).toFixed(2));
       localStorage.setItem('cashier_pin', '0000');
 
       // Set state
       setActiveCashierSession({
-        id: data.id,
+        id: res.session_id,
         cashierName: cashierNameInput.trim(),
-        openingBalance: '0.00'
+        openingBalance: parseFloat(openingBalanceInput || 0)
       });
       setCashierPin('0000');
       showNotification(isArabic ? "تم فتح وردية الكاشير بنجاح! 🟢" : "Cashier shift opened successfully! 🟢");
@@ -2251,6 +2253,26 @@ export default function App() {
       </div>
     );
   };
+
+  // Render Remote Blocking Overlay if cashier device is disabled or revoked by management
+  if (isDeviceBlocked) {
+    return (
+      <div dir={isArabic ? "rtl" : "ltr"} className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center select-none fixed inset-0 z-[99999]">
+        <div className="p-5 bg-rose-500/20 rounded-2xl border border-rose-500/40 mb-6 animate-pulse">
+          <Lock className="w-14 h-14 text-rose-500 mx-auto" />
+        </div>
+        <h1 className="text-2xl font-black mb-3 text-rose-400">
+          {isArabic ? "تم إيقاف جهاز الكاشير من الإدارة" : "This cashier device has been disabled by management"}
+        </h1>
+        <p className="text-sm text-slate-300 max-w-md leading-relaxed font-medium">
+          {isArabic 
+            ? "تم تعليق هذا الجهاز مؤقتاً بواسطة مدير النظام. يرجى التواصل مع الإدارة لإعادة تفعيل الجهاز."
+            : "This device has been temporarily suspended by system management. Please contact administration to restore access."
+          }
+        </p>
+      </div>
+    );
+  }
 
   // Render Maintenance Screen if enabled and user is not admin
   if (isUnderMaintenance) {

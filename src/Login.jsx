@@ -71,28 +71,31 @@ export default function Login({ isArabic: propIsArabic, setIsArabic: propSetIsAr
       setLoading(true);
       setErrorMsg('');
       
-      // Verify activation through the security-definer RPC; the device table is intentionally not publicly readable.
-      const { data: verified, error } = await supabase.rpc('verify_pos_device_activation', {
-        code_input: activationCode.trim()
+      const { data: res, error } = await supabase.rpc('redeem_pos_activation_code', {
+        p_code_input: activationCode.trim()
       });
 
       if (error) throw error;
-
-      const data = verified?.[0];
-      if (!data) {
-        throw new Error(isArabic ? 'رمز تفعيل الجهاز غير صالح أو تم إلغاؤه.' : 'Invalid or revoked device activation code.');
+      if (!res?.success) {
+        throw new Error(res?.error || (isArabic ? 'رمز تفعيل الجهاز غير صالح أو انتهت صلاحيته.' : 'Invalid or expired device activation code.'));
       }
 
-      // Update last active timestamp
-      await supabase.rpc('touch_pos_device', { device_uuid: data.device_id });
+      // Store device credentials securely in localStorage
+      localStorage.setItem('device_id', res.device_id);
+      if (res.device_token) {
+        localStorage.setItem('device_token', res.device_token);
+      }
+      localStorage.setItem('store_id', res.store_id);
+      localStorage.setItem('device_name', res.device_name);
 
-      // Store in localStorage
-      localStorage.setItem('device_id', data.device_id);
-      localStorage.setItem('store_id', data.store_id);
-      localStorage.setItem('device_name', data.device_name);
+      // Touch active timestamp
+      await supabase.rpc('touch_pos_device_v2', {
+        p_device_id: res.device_id,
+        p_device_token: res.device_token
+      });
 
       if (onLoginSuccess) {
-        onLoginSuccess(data.device_id, data.store_id);
+        onLoginSuccess(res.device_id, res.store_id);
       }
     } catch (err) {
       console.error("Auth error:", err);
