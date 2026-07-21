@@ -170,4 +170,46 @@ describe('Superadmin Database Security, RLS & Analytics Integration Tests', () =
       expect(data.error).toBeDefined();
     }
   });
+
+  // 13. Verify database CHECK constraint on store_users.role
+  it('should verify database CHECK constraint rejects invalid role insertions', async () => {
+    const { data: store, error: storeErr } = await anonymousClient
+      .from('stores')
+      .select('id')
+      .limit(1)
+      .maybeSingle();
+
+    expect(storeErr).toBeNull();
+    if (store) {
+      const { error } = await anonymousClient
+        .from('store_users')
+        .insert({
+          user_id: '00000000-0000-0000-0000-000000000000',
+          store_id: store.id,
+          role: 'unrecognized_fake_role'
+        });
+
+      expect(error).toBeDefined();
+      expect(error.message).toContain('store_users_role_check');
+    }
+  });
+
+  // 14. Verify admin-create-user Edge Function rejects arbitrary role values
+  it('should verify admin-create-user Edge Function rejects invalid role parameters', async () => {
+    const { data, error } = await anonymousClient.functions.invoke('admin-create-user', {
+      body: {
+        email: 'test-role@cashmint.online',
+        password: 'TestPassword123',
+        role: 'unrecognized_fake_role',
+        store_id: 'd2c884fe-cf72-4d0f-a36c-2f98fbde10d0'
+      }
+    });
+
+    if (error) {
+      expect(error.message).toBeDefined();
+    } else {
+      expect(data.error).toBeDefined();
+      expect(data.error).toContain('unrecognized role');
+    }
+  });
 });

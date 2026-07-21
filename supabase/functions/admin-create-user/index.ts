@@ -65,15 +65,24 @@ serve(async (req) => {
       })
     }
 
-    // Verify caller has permissions (is store admin of that store or is superadmin)
-    const { data: callerMapping } = await serviceClient
-      .from('store_users')
-      .select('role')
-      .eq('user_id', user.id)
-      .eq('store_id', store_id)
-      .maybeSingle()
+    // Role validation against explicit allowlist
+    const ALLOWED_ROLES = ['cashier', 'admin', 'superadmin']
+    if (!ALLOWED_ROLES.includes(role)) {
+      return new Response(JSON.stringify({ error: `Forbidden: Invalid or unrecognized role '${role}'` }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
-    const { data: isSuper } = await serviceClient.rpc('is_superadmin')
+    // Verify caller's Super Admin status using the authenticated userClient
+    const { data: isSuper, error: isSuperError } = await userClient.rpc('is_superadmin')
+    if (isSuperError) {
+      console.error("is_superadmin RPC check failed:", isSuperError)
+      return new Response(JSON.stringify({ error: 'Forbidden: Authorization check failed' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     // ONLY verified superadmins can assign the superadmin role
     if (role === 'superadmin' && !isSuper) {
@@ -82,6 +91,14 @@ serve(async (req) => {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
     }
+
+    // Verify caller has permissions (is store admin of that store or is superadmin)
+    const { data: callerMapping } = await serviceClient
+      .from('store_users')
+      .select('role')
+      .eq('user_id', user.id)
+      .eq('store_id', store_id)
+      .maybeSingle()
 
     const isAuthorized = isSuper || (callerMapping && callerMapping.role === 'admin')
     if (!isAuthorized) {
