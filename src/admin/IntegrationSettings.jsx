@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
 import { printReceipt } from '../utils/printerService';
+import PrintingDiagnosticsModal from '../components/admin/PrintingDiagnosticsModal';
 import { 
   Printer, 
   Globe, 
@@ -24,6 +25,8 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   
   const [saving, setSaving] = useState(false);
   const [testingPrinter, setTestingPrinter] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [secretTapCount, setSecretTapCount] = useState(0);
 
   // Auto-print output toggles
   const [autoPrintCashier, setAutoPrintCashier] = useState(() => localStorage.getItem('auto_print_cashier') !== 'false');
@@ -516,9 +519,30 @@ export default function IntegrationSettings({ store, setStore, showNotification,
             <div className="p-2 bg-amber-50 dark:bg-amber-955/20 rounded-xl text-amber-500">
               <Printer className="w-5 h-5" />
             </div>
-            <div>
-              <h3 className="font-extrabold text-sm text-slate-800 dark:text-white">{isArabic ? "طابعة الفواتير" : "Receipt Printer"}</h3>
-              <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold">Epson TM-T20IV (ePOS XML / HTTP POST)</p>
+            <div className="flex-1 flex items-center justify-between">
+              <div 
+                onClick={() => {
+                  const next = secretTapCount + 1;
+                  if (next >= 7) {
+                    setDiagnosticsOpen(true);
+                    setSecretTapCount(0);
+                  } else {
+                    setSecretTapCount(next);
+                  }
+                }}
+                className="cursor-pointer select-none"
+                title="Tap 7 times to open Printing Diagnostics"
+              >
+                <h3 className="font-extrabold text-sm text-slate-800 dark:text-white">{isArabic ? "طابعة الفواتير" : "Receipt Printer"}</h3>
+                <p className="text-[10px] text-slate-400 dark:text-slate-400 font-bold">Epson TM-T20IV (ePOS XML / HTTP POST)</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDiagnosticsOpen(true)}
+                className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/20 rounded-xl text-[10px] font-black transition-all cursor-pointer"
+              >
+                {isArabic ? "تشخيص الطباعة (iPad Diagnostics)" : "Printing Diagnostics"}
+              </button>
             </div>
           </div>
 
@@ -1181,6 +1205,13 @@ export default function IntegrationSettings({ store, setStore, showNotification,
         </div>
       </div>
 
+      <PrintingDiagnosticsModal
+        isOpen={diagnosticsOpen}
+        onClose={() => setDiagnosticsOpen(false)}
+        onRetryPrint={null}
+        isArabic={isArabic}
+        store={store}
+      />
     </div>
   );
 }

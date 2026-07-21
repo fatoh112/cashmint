@@ -6,6 +6,7 @@
  */
 
 import { mergeAndEnforceReceiptConfig, getReceiptTranslation } from './receiptSchema';
+import { addDiagnosticLog } from './diagnosticLogger';
 
 /**
  * Format string line with left and right aligned parts to fit printer paper width.
@@ -49,7 +50,7 @@ function normalizeStoreInfo(storeInput, config = {}) {
       address: storeInput?.address || storeInput?.street_address || '',
       vat_number: storeInput?.vat_number || storeInput?.tax_id || '',
       phone: storeInput?.phone || '',
-      logo_url: storeInput?.logo_url || ''
+      logo_url: storeInput?.logo_url || storeInput?.logoUrl || ''
     };
 
   return {
@@ -65,25 +66,55 @@ function normalizeStoreInfo(storeInput, config = {}) {
  * Epson ePOS XML image syntax: <image width="256" height="128" align="center" color="color_1">HEX_RASTER_DATA</image>
  */
 export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTargetWidth = 256) {
+  console.log(`[LOGO-TRACE] normalized-logo-url: ${logoUrl || '(none)'}`);
   if (!logoUrl) return '';
 
+  let objectUrlToRevoke = null;
   try {
+    let srcToLoad = logoUrl;
+
+    if (typeof fetch !== 'undefined' && logoUrl.startsWith('http')) {
+      try {
+        console.log(`[LOGO-TRACE] fetch-status: fetching blob for logoUrl...`);
+        const res = await fetch(logoUrl);
+        console.log(`[LOGO-TRACE] fetch-status: ${res.status}`);
+        const contentType = res.headers.get('content-type') || '';
+        console.log(`[LOGO-TRACE] response-content-type: ${contentType}`);
+        if (res.ok) {
+          const blob = await res.blob();
+          console.log(`[LOGO-TRACE] blob-size: ${blob.size}`);
+          if (blob.size > 0) {
+            objectUrlToRevoke = URL.createObjectURL(blob);
+            srcToLoad = objectUrlToRevoke;
+          }
+        }
+      } catch (fetchErr) {
+        console.warn(`[LOGO-TRACE] fetch failed, fallback to direct src: ${fetchErr.message}`);
+      }
+    }
+
     const img = new Image();
-    img.crossOrigin = 'Anonymous';
+    if (!objectUrlToRevoke && !logoUrl.startsWith('data:')) {
+      img.crossOrigin = 'Anonymous';
+    }
 
     await new Promise((resolve, reject) => {
       img.onload = resolve;
       img.onerror = (e) => reject(new Error('Failed to load logo image for thermal rasterization'));
-      img.src = logoUrl;
+      img.src = srcToLoad;
     });
+
+    console.log(`[LOGO-TRACE] image-natural-size: ${img.naturalWidth || img.width}x${img.naturalHeight || img.height}`);
 
     // Ensure target width is a multiple of 8 (Epson requirement)
     let width = Math.min(img.width || 256, maxTargetWidth);
     width = Math.floor(width / 8) * 8;
     if (width < 8) width = 8;
 
-    const scale = width / img.width;
-    const height = Math.max(1, Math.round(img.height * scale));
+    const scale = width / (img.width || width);
+    const height = Math.max(1, Math.round((img.height || width) * scale));
+
+    console.log(`[LOGO-TRACE] canvas-size: ${width}x${height}`);
 
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -99,6 +130,7 @@ export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTarget
 
     const imgData = ctx.getImageData(0, 0, width, height);
     const pixels = imgData.data;
+    console.log(`[LOGO-TRACE] canvas-read-success: true, pixelCount: ${pixels.length / 4}`);
 
     // Convert pixels to 1-bit monochrome raster data (1 = black, 0 = white, MSB first)
     const bytesPerRow = width / 8;
@@ -130,11 +162,21 @@ export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTarget
       hexString += rasterBytes[i].toString(16).padStart(2, '0');
     }
 
-    console.log(`[LOGO DEBUG] image data length: ${hexString.length / 2} bytes (${width}x${height}px)`);
-    return `<image width="${width}" height="${height}" align="${align}" color="color_1">${hexString.toUpperCase()}</image>&#10;`;
+    console.log(`[LOGO-TRACE] raster-byte-count: ${rasterBytes.length}`);
+    console.log(`[LOGO-TRACE] raster-hex-length: ${hexString.length}`);
+
+    const logoXmlTag = `<image width="${width}" height="${height}" align="${align}" color="color_1">${hexString.toUpperCase()}</image>&#10;`;
+    console.log(`[LOGO-TRACE] xml-image-tag-present: true`);
+    console.log(`[LOGO-TRACE] xml-image-data-length: ${logoXmlTag.length}`);
+
+    return logoXmlTag;
   } catch (err) {
-    console.warn("[LOGO DEBUG] Logo conversion for Epson XML failed:", err.message);
+    console.warn("[LOGO-TRACE] failure-reason:", err.message);
     return '';
+  } finally {
+    if (objectUrlToRevoke) {
+      URL.revokeObjectURL(objectUrlToRevoke);
+    }
   }
 }
 
@@ -147,8 +189,9 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
   const store = normalizeStoreInfo(storeInput, config);
   const isKitchen = outputType === 'kitchen_ticket';
 
-  console.log("[LOGO DEBUG] logo URL value:", store.logo_url || '(none)');
-  console.log("[LOGO DEBUG] logo conversion called or not:", Boolean(config.header?.show_logo && store.logo_url && !isKitchen));
+  console.log(`[LOGO-TRACE] template-type: ${outputType}`);
+  console.log(`[LOGO-TRACE] show-logo: ${Boolean(config.header?.show_logo)}`);
+  console.log(`[LOGO-TRACE] normalized-logo-url: ${store.logo_url || '(none)'}`);
 
   const width = config.paper_width === 58 ? 30 : 40;
   const sepChar = config.styles?.divider_style === 'double' ? '=' : '-';
@@ -829,6 +872,13 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
   let responseText = '';
 
   try {
+    addDiagnosticLog({
+      type: '[EPSON-TRACE]',
+      step: 'epos-send-start',
+      success: true,
+      metadata: { endpoint, payloadLength: soapPayload.length, outputType: options.outputType || 'pos_receipt' }
+    });
+
     response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -839,6 +889,7 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
     });
 
     responseText = await response.text();
+    console.log("[LOGO-TRACE] Epson-response:", responseText);
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -861,6 +912,15 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
     const codeAttr = responseTag.getAttribute('code');
 
     if (successAttr === 'true' || successAttr === '1') {
+      addDiagnosticLog({
+        type: '[EPSON-TRACE]',
+        step: 'epos-response-success',
+        success: true,
+        status: response.status,
+        code: codeAttr || 'OK',
+        transport: 'epos',
+        metadata: { successAttr }
+      });
       return {
         success: true,
         transport: "epos",
@@ -876,6 +936,16 @@ export async function printReceipt(order, printerIP, storeInput = 'Cashmint', op
       throw err;
     }
   } catch (error) {
+    addDiagnosticLog({
+      type: '[EPSON-TRACE]',
+      step: 'epos-response-error',
+      success: false,
+      status: response ? response.status : null,
+      code: error.code || 'FETCH_ERROR',
+      transport: 'epos',
+      error: error.message
+    });
+
     if (isDebug) {
       console.error("ePOS Direct Connection Error:", error);
     }

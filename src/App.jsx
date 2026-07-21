@@ -7,6 +7,8 @@ import { calculateOrderAccounting } from './utils/taxCalculator';
 import { validateSplitAmounts, calculateFiftyFiftySplit, toCents, fromCents } from './utils/splitPaymentUtils';
 import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
+import PrintingDiagnosticsModal from './components/admin/PrintingDiagnosticsModal';
+import { addDiagnosticLog, setLastPrintAttempt, getLastPrintAttempt } from './utils/diagnosticLogger';
 
 const currentMode = import.meta.env.VITE_APP_MODE || import.meta.env.MODE;
 
@@ -386,10 +388,29 @@ export default function App() {
     }
   };
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [secretTapCount, setSecretTapCount] = useState(0);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [actualCashInput, setActualCashInput] = useState('');
   const [handoverLoading, setHandoverLoading] = useState(false);
   const [printerIP, setPrinterIP] = useState(() => localStorage.getItem('local_printer_ip') || '');
+
+  useEffect(() => {
+    const checkDiagnosticsUrl = () => {
+      const path = typeof window !== 'undefined' ? window.location.pathname : '';
+      const search = typeof window !== 'undefined' ? window.location.search : '';
+      const hash = typeof window !== 'undefined' ? window.location.hash : '';
+      if (path.includes('/printing-diagnostics') || search.includes('diagnostics=printing') || hash.includes('printing-diagnostics')) {
+        setDiagnosticsOpen(true);
+      }
+    };
+    checkDiagnosticsUrl();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('popstate', checkDiagnosticsUrl);
+      return () => window.removeEventListener('popstate', checkDiagnosticsUrl);
+    }
+  }, []);
+
   useEffect(() => {
     if (settingsOpen) {
       setPrinterIP(localStorage.getItem('local_printer_ip') || '');
@@ -556,29 +577,60 @@ export default function App() {
   const [isSubmittingSplit, setIsSubmittingSplit] = useState(false);
   const [confirmCashReturnedModal, setConfirmCashReturnedModal] = useState(false);
 
-  const markOrderReceiptPrinted = (orderId) => {
+  const isOrderReceiptPrinted = (orderId) => {
     if (!orderId) return false;
     try {
       const raw = localStorage.getItem('printed_receipt_orders') || '[]';
       const list = JSON.parse(raw);
-      if (list.includes(orderId)) return false;
-      list.push(orderId);
-      if (list.length > 200) list.shift();
-      localStorage.setItem('printed_receipt_orders', JSON.stringify(list));
-      return true;
+      return list.includes(orderId);
     } catch (e) {
-      return true;
+      return false;
     }
+  };
+
+  const recordOrderReceiptPrinted = (orderId) => {
+    if (!orderId) return;
+    try {
+      const raw = localStorage.getItem('printed_receipt_orders') || '[]';
+      const list = JSON.parse(raw);
+      if (!list.includes(orderId)) {
+        list.push(orderId);
+        if (list.length > 200) list.shift();
+        localStorage.setItem('printed_receipt_orders', JSON.stringify(list));
+      }
+    } catch (e) {
+      console.warn("Failed to update printed_receipt_orders:", e);
+    }
+  };
+
+  const markOrderReceiptPrinted = (orderId) => {
+    if (!orderId) return false;
+    if (isOrderReceiptPrinted(orderId)) return false;
+    recordOrderReceiptPrinted(orderId);
+    return true;
   };
   useEffect(() => {
     activePaymentOrderIdRef.current = activePaymentOrderId;
   }, [activePaymentOrderId]);
 
   const enqueueAutoReceiptPrint = useCallback((order) => {
-    console.log("🖨️ [AUTO-PRINT] enqueueAutoReceiptPrint invoked with order:", order);
+    console.log("[CASH-TRACE] enqueue-enter", order);
+    addDiagnosticLog({
+      type: '[CASH-TRACE]',
+      step: 'enqueue-enter',
+      success: true,
+      metadata: { orderId: order?.id, paymentMethod: order?.payment_method || 'cash' }
+    });
+
     const orderKey = order?.id || (order?.receipt_number ? `receipt-${order.receipt_number}` : null);
     if (!orderKey) {
       console.warn("🖨️ [AUTO-PRINT] Missing orderKey, skipping print.");
+      addDiagnosticLog({
+        type: '[CASH-TRACE]',
+        step: 'missing-order-key',
+        success: false,
+        error: 'Missing order key'
+      });
       return Promise.resolve({ success: false, skipped: true, reason: 'missing_order_key' });
     }
 
@@ -598,15 +650,73 @@ export default function App() {
         const autoPrintCustomer = localStorage.getItem('auto_print_customer') === 'true';
         const autoPrintKitchen = localStorage.getItem('auto_print_kitchen') !== 'false';
 
-        console.log("[CASH PRINT DEBUG] print settings status - Master:", autoPrintMaster, "| IP:", localPrinterIP, "| Cashier:", autoPrintCashier, "| Customer:", autoPrintCustomer, "| Kitchen:", autoPrintKitchen);
+        addDiagnosticLog({
+          type: '[CASH-TRACE]',
+          step: 'settings-check',
+          success: true,
+          metadata: { autoPrintMaster, localPrinterIP, autoPrintCashier, autoPrintCustomer, autoPrintKitchen }
+        });
 
-        if (!localPrinterIP || !autoPrintMaster) {
-          console.warn("🖨️ [AUTO-PRINT] Skipping print: Master toggle disabled or Printer IP missing.");
-          return { success: false, skipped: true, reason: 'disabled_or_no_ip' };
+        // 0. Cash Order Data Validation before printing
+        const rawItems = order?.raw_payload?.cart_items || [];
+        const hasValidOrder = Boolean(order?.id);
+        const hasCartItems = Array.isArray(rawItems) && rawItems.length > 0;
+        const hasTotals = order?.total_amount !== undefined;
+        const hasPrinterIP = Boolean(localPrinterIP);
+        const hasOutputs = autoPrintCashier || autoPrintCustomer || autoPrintKitchen;
+
+        if (!hasValidOrder || !hasCartItems || !hasTotals || !hasPrinterIP || !hasOutputs || !autoPrintMaster) {
+          let validationErrCode = 'INVALID_ORDER_PAYLOAD';
+          let validationMessage = 'Order validation failed: ';
+          if (!hasValidOrder) { validationErrCode = 'MISSING_ORDER_ID'; validationMessage += 'Missing order ID. '; }
+          else if (!hasCartItems) { validationErrCode = 'MISSING_CART_ITEMS'; validationMessage += 'Order payload has 0 cart items. '; }
+          else if (!hasTotals) { validationErrCode = 'MISSING_TOTALS'; validationMessage += 'Order totals missing. '; }
+          else if (!hasPrinterIP) { validationErrCode = 'MISSING_PRINTER_IP'; validationMessage += 'Printer IP address not set. '; }
+          else if (!hasOutputs) { validationErrCode = 'NO_OUTPUTS_ENABLED'; validationMessage += 'No auto-print output toggles enabled. '; }
+          else if (!autoPrintMaster) { validationErrCode = 'AUTO_PRINT_DISABLED'; validationMessage += 'Master auto-print toggle is disabled. '; }
+
+          addDiagnosticLog({
+            type: '[CASH-TRACE]',
+            step: 'validation-failed',
+            success: false,
+            code: validationErrCode,
+            error: validationMessage,
+            metadata: { orderId: order?.id, itemCount: rawItems.length, localPrinterIP }
+          });
+
+          setLastPrintAttempt({
+            orderId: order?.id || null,
+            paymentMethod: order?.payment_method || 'cash',
+            attemptedTypes: [],
+            success: false,
+            logoIncluded: false,
+            errorStage: 'Validation',
+            errorCode: validationErrCode,
+            retryAllowed: false,
+            printableOrder: order,
+            rawEpsonResponse: null
+          });
+
+          if (!autoPrintMaster) {
+            return { success: false, skipped: true, reason: 'disabled_or_no_ip' };
+          }
+
+          showNotification(
+            isArabic ? "فشلت طباعة الفاتورة. افتح قائمة تشخيص الطباعة للتفاصيل." : "Receipt printing failed. Open Printing Diagnostics for details.",
+            "error"
+          );
+          return { success: false, skipped: true, reason: validationErrCode };
         }
 
-        if (order?.id && !markOrderReceiptPrinted(order.id)) {
-          console.log("🖨️ [AUTO-PRINT] Order already printed previously:", order.id);
+        console.log(`[CASH-TRACE] dedupe-before - orderId: ${order?.id}`);
+        if (order?.id && isOrderReceiptPrinted(order.id)) {
+          console.log(`[CASH-TRACE] dedupe-result - Order already printed previously: ${order.id}`);
+          addDiagnosticLog({
+            type: '[CASH-TRACE]',
+            step: 'dedupe-check',
+            success: true,
+            metadata: { alreadyPrinted: true, orderId: order.id }
+          });
           return { success: true, skipped: true, alreadyPrinted: true };
         }
 
@@ -615,12 +725,8 @@ export default function App() {
         if (autoPrintCustomer) enabledOutputs.push('customer_receipt');
         if (autoPrintKitchen) enabledOutputs.push('kitchen_ticket');
 
-        if (enabledOutputs.length === 0) {
-          console.warn("🖨️ [AUTO-PRINT] Skipping print: No output toggles enabled.");
-          return { success: false, skipped: true, reason: 'no_outputs_enabled' };
-        }
-
         // Fetch store templates
+        console.log("[CASH-TRACE] template-fetch-start");
         const tplMap = {};
         if (store?.id) {
           try {
@@ -633,9 +739,9 @@ export default function App() {
             (tpls || []).forEach(t => {
               tplMap[t.template_type] = t.config_json;
             });
-            console.log("🖨️ [AUTO-PRINT] Loaded store receipt templates:", Object.keys(tplMap));
+            console.log("[CASH-TRACE] template-fetch-result", Object.keys(tplMap));
           } catch (e) {
-            console.warn("🖨️ [AUTO-PRINT] Could not load store receipt templates:", e);
+            console.warn("[CASH-TRACE] template-fetch-result error:", e);
           }
         }
 
@@ -649,13 +755,32 @@ export default function App() {
 
           let jobRes = { success: false, error: 'Print job failed' };
           for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`[CASH-TRACE] network-send-start attempt ${attempt} for ${outputType}`);
+            addDiagnosticLog({
+              type: '[CASH-TRACE]',
+              step: `network-send-start-${outputType}`,
+              success: true,
+              metadata: { attempt, outputType, printerIP: localPrinterIP }
+            });
+
             jobRes = await printReceipt(order, localPrinterIP, store || 'Cashmint', {
               templateConfig,
               outputType,
               skipFallback: true,
               isArabic
             });
-            console.log("[CASH PRINT DEBUG] printer response for", outputType, ":", jobRes);
+
+            console.log(`[CASH-TRACE] network-send-result attempt ${attempt}:`, jobRes);
+            addDiagnosticLog({
+              type: '[CASH-TRACE]',
+              step: `network-send-result-${outputType}`,
+              success: jobRes.success,
+              status: jobRes.status,
+              code: jobRes.code,
+              transport: jobRes.transport,
+              error: jobRes.error
+            });
+
             if (jobRes.success) break;
             if (attempt < 3) {
               await new Promise(resolve => setTimeout(resolve, 2000));
@@ -672,9 +797,35 @@ export default function App() {
           }
         }
 
+        setLastPrintAttempt({
+          orderId: order.id,
+          paymentMethod: order.payment_method || 'cash',
+          attemptedTypes: enabledOutputs,
+          success: overallSuccess,
+          logoIncluded: Boolean(store?.logo_url || store?.logoUrl),
+          errorStage: overallSuccess ? null : 'Epson Network POST',
+          errorCode: overallSuccess ? null : (lastError || 'EPSON_RESPONSE_ERROR'),
+          retryAllowed: !overallSuccess && !isOrderReceiptPrinted(order.id),
+          printableOrder: order,
+          rawEpsonResponse: lastError
+        });
+
         if (!overallSuccess) {
-          showNotification(`خطأ في الطباعة: ${lastError}`, "error");
+          showNotification(
+            isArabic ? "فشلت طباعة الفاتورة. افتح قائمة تشخيص الطباعة للتفاصيل." : "Receipt printing failed. Open Printing Diagnostics for details.",
+            "error"
+          );
         } else {
+          if (order?.id) {
+            console.log(`[CASH-TRACE] dedupe-write - recording print success for orderId: ${order.id}`);
+            recordOrderReceiptPrinted(order.id);
+            addDiagnosticLog({
+              type: '[CASH-TRACE]',
+              step: 'dedupe-write',
+              success: true,
+              metadata: { orderId: order.id }
+            });
+          }
           showNotification(isArabic ? "تم إرسال الفاتورة للطابعة بنجاح" : "Receipt printed successfully");
         }
         return { success: overallSuccess, error: lastError };
@@ -1739,7 +1890,8 @@ export default function App() {
       return;
     }
     checkoutInFlightRef.current = true;
-    console.log("[CASH PRINT DEBUG] checkout started. Payment method:", paymentMethod);
+    console.log("[CASH-TRACE] checkout-enter");
+    console.log(`[CASH-TRACE] selected-payment-method: ${paymentMethod}`);
 
     try {
       showNotification(isArabic ? "جاري إرسال الطلب..." : "Submitting order...", "info");
@@ -1747,14 +1899,27 @@ export default function App() {
       const activeStoreId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
       const activeSessionId = activeCashierSession?.id || localStorage.getItem('cashier_session_id');
 
+      const cartItems = cart.map(item => ({
+        name: item.product?.name || 'Product',
+        price: parseFloat(item.product?.price || 0),
+        quantity: item.quantity,
+        modifiers: (item.selectedModifiers || []).map(m => ({
+          name: m.name,
+          price_adjustment: parseFloat(m.price_adjustment || 0)
+        }))
+      }));
+
       // Creates the receipt, immutable item snapshots, and payment atomically.
       const rawPayload = {
         order_type: orderType,
         coupon_code: appliedCoupon ? appliedCoupon.code : null,
         discount_amount: accounting.totals.discount,
         cashier_session_id: activeSessionId,
+        cart_items: cartItems,
         timestamp: new Date().toISOString()
       };
+
+      console.log("[CASH-TRACE] order-create-start");
       const { data: orderData, error: orderErr } = await supabase.rpc('create_accounting_order', {
         p_store_id: activeStoreId,
         p_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id'),
@@ -1774,7 +1939,17 @@ export default function App() {
       const createdOrder = Array.isArray(orderData) ? orderData[0] : orderData;
       if (!createdOrder?.id) throw new Error('The order was not returned by the accounting checkout.');
 
-      console.log("[CASH PRINT DEBUG] order created. Order ID:", createdOrder.id, "Total:", createdOrder.total_amount);
+      console.log("[CASH-TRACE] order-create-result Order ID:", createdOrder.id);
+      console.log("[CASH-TRACE] created-order-shape", createdOrder);
+
+      const printableOrder = {
+        ...createdOrder,
+        raw_payload: {
+          ...(createdOrder.raw_payload || {}),
+          cart_items: cartItems
+        }
+      };
+      console.log("[CASH-TRACE] printable-order-shape", printableOrder);
 
       // Update cashier session totals for cash orders
       if (paymentMethod === 'cash') {
@@ -1855,21 +2030,21 @@ export default function App() {
         });
         if (paymentRequestError) throw paymentRequestError;
         if (!paymentRequest?.id) throw new Error('Card payment bridge did not accept the payment request.');
-        activePaymentOrderRef.current = createdOrder;
+        activePaymentOrderRef.current = printableOrder;
         setActivePaymentOrderId(createdOrder.id);
         setActivePaymentRequestId(paymentRequest.id);
         setShowStripeModal(true);
         setStripeStatus(paymentRequest.status || 'pending');
-        setLastCompletedOrder(createdOrder);
+        setLastCompletedOrder(printableOrder);
 
         if (orderCompleteSoundEnabled) playChime();
         setCart([]);
         showNotification(isArabic ? "جاري إرسال الطلب لجهاز البطاقة... 💳" : "Payment request sent to terminal... 💳");
       } else {
         // Cash / Direct payment completed
-        setLastCompletedOrder(createdOrder);
-        console.log("[CASH PRINT DEBUG] enqueueAutoReceiptPrint called. Order ID:", createdOrder.id);
-        enqueueAutoReceiptPrint(createdOrder);
+        setLastCompletedOrder(printableOrder);
+        console.log("[CASH-TRACE] enqueue-before Order ID:", printableOrder.id);
+        enqueueAutoReceiptPrint(printableOrder);
 
         if (orderCompleteSoundEnabled) playChime();
         setCart([]);
@@ -3428,7 +3603,19 @@ export default function App() {
             {/* Modal Header */}
             <div className="p-5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
               <div>
-                <h3 className="font-extrabold text-base text-slate-800 dark:text-white">
+                <h3 
+                  onClick={() => {
+                    const next = secretTapCount + 1;
+                    if (next >= 7) {
+                      setDiagnosticsOpen(true);
+                      setSecretTapCount(0);
+                    } else {
+                      setSecretTapCount(next);
+                    }
+                  }}
+                  className="font-extrabold text-base text-slate-800 dark:text-white cursor-pointer select-none"
+                  title="Tap 7 times to open Printing Diagnostics"
+                >
                   {isArabic ? "إعدادات الكاشير" : "Cashier POS Settings"}
                 </h3>
               </div>
@@ -3445,7 +3632,16 @@ export default function App() {
             <div className="flex border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/30 p-2 gap-1.5 shrink-0" dir={isArabic ? "rtl" : "ltr"}>
               <button
                 type="button"
-                onClick={() => setActiveSettingsTab('printer')}
+                onClick={() => {
+                  setActiveSettingsTab('printer');
+                  const next = secretTapCount + 1;
+                  if (next >= 7) {
+                    setDiagnosticsOpen(true);
+                    setSecretTapCount(0);
+                  } else {
+                    setSecretTapCount(next);
+                  }
+                }}
                 className={`flex-1 py-2 text-center text-xs font-bold rounded-xl transition-all cursor-pointer ${activeSettingsTab === 'printer'
                   ? 'bg-amber-500 text-white shadow-sm font-extrabold'
                   : 'text-slate-555 dark:text-slate-455 hover:bg-slate-100 dark:hover:bg-slate-750'
@@ -3683,6 +3879,18 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Printing Diagnostics Engine Modal */}
+      <PrintingDiagnosticsModal
+        isOpen={diagnosticsOpen}
+        onClose={() => setDiagnosticsOpen(false)}
+        onRetryPrint={(printableOrder) => {
+          setDiagnosticsOpen(false);
+          enqueueAutoReceiptPrint(printableOrder);
+        }}
+        isArabic={isArabic}
+        store={store}
+      />
 
       {/* Handover Confirmation Modal */}
       {logoutConfirmOpen && (
