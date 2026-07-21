@@ -75,6 +75,14 @@ serve(async (req) => {
 
     const { data: isSuper } = await serviceClient.rpc('is_superadmin')
 
+    // ONLY verified superadmins can assign the superadmin role
+    if (role === 'superadmin' && !isSuper) {
+      return new Response(JSON.stringify({ error: 'Forbidden: Only verified superadmins can assign the superadmin role' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
+
     const isAuthorized = isSuper || (callerMapping && callerMapping.role === 'admin')
     if (!isAuthorized) {
       return new Response(JSON.stringify({ error: 'Forbidden: Admin access required for this store' }), {

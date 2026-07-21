@@ -4,7 +4,7 @@ import { Store, Plus, Edit2, Trash2, X, Check, Settings, Users } from 'lucide-re
 import CatalogManagerDrawer from './components/CatalogManagerDrawer';
 import UserManagerDrawer from './components/UserManagerDrawer';
 
-export default function StoresManagement({ showNotification, isArabic }) {
+export default function StoresManagement({ showNotification, isArabic, onSelectStore }) {
   const [stores, setStores] = useState([]);
   const [loading, setLoading] = useState(false);
   
@@ -276,7 +276,16 @@ export default function StoresManagement({ showNotification, isArabic }) {
                       {store.logo_url && (
                         <img src={store.logo_url} alt="Logo" className="w-6 h-6 rounded-lg bg-slate-800 border border-slate-750 object-contain p-0.5" />
                       )}
-                      <span>{store.name || (isArabic ? 'بانتظار الإعداد' : 'Awaiting Setup')}</span>
+                      {onSelectStore ? (
+                        <button
+                          onClick={() => onSelectStore(store.id)}
+                          className="hover:text-cyan-400 font-extrabold cursor-pointer transition-colors text-right"
+                        >
+                          {store.name || (isArabic ? 'بانتظار الإعداد' : 'Awaiting Setup')}
+                        </button>
+                      ) : (
+                        <span>{store.name || (isArabic ? 'بانتظار الإعداد' : 'Awaiting Setup')}</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 font-bold text-slate-400">
                       {businessTypes.find(t => t.value === store.business_type)?.label || store.business_type || 'N/A'}
