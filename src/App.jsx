@@ -1250,23 +1250,6 @@ export default function App() {
           totalSales: 0,
           cashBalance: parseFloat(storedOpeningBalance || 0)
         });
-        supabase
-          .from('cashier_sessions')
-          .select('*')
-          .eq('id', storedSessionId)
-          .maybeSingle()
-          .then(({ data: sessData }) => {
-            if (sessData) {
-              setActiveCashierSession({
-                id: sessData.id,
-                cashierName: sessData.cashier_name,
-                openingBalance: parseFloat(sessData.opening_balance || 0),
-                totalSales: parseFloat(sessData.total_sales || 0),
-                cashBalance: parseFloat(sessData.cash_balance || 0)
-              });
-            }
-          })
-          .catch(err => console.error("Error fetching cashier session on load:", err));
         setCashierPin(storedPin || '');
       }
     }
@@ -1501,8 +1484,6 @@ export default function App() {
               payload.new.status === 'completed' &&
               payload.new.id === activePaymentOrderIdRef.current
             ) {
-              // Immediately clear reference to prevent duplicate printing on concurrent update events
-              setLastCompletedOrder(payload.new);
               enqueueAutoReceiptPrint(payload.new);
 
               if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
@@ -1515,64 +1496,15 @@ export default function App() {
               activePaymentOrderRef.current = null;
               showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح! 🚀" : "Stripe payment successfully completed! 🚀");
 
-              // Update cashier session totals for card orders
-              const activeSessionId = localStorage.getItem('cashier_session_id');
-              if (activeSessionId) {
-                supabase
-                  .from('cashier_sessions')
-                  .select('*')
-                  .eq('id', activeSessionId)
-                  .maybeSingle()
-                  .then(async ({ data: currentSess }) => {
-                    if (currentSess) {
-                      const orderTotal = parseFloat(payload.new.total_amount || 0);
-                      const nextSales = Number(currentSess.total_sales || 0) + orderTotal;
-                      const nextBalance = Number(currentSess.cash_balance || 0); // Card orders only update total_sales
-                      const currentMetadata = currentSess.metadata || {};
-
-                      const updatedMetadata = {
-                        ...currentMetadata,
-                        finances: {
-                          total_sales: nextSales,
-                          cash_balance: nextBalance
-                        }
-                      };
-
-                      const { data: updatedSess } = await supabase
-                        .from('cashier_sessions')
-                        .update({
-                          total_sales: nextSales,
-                          cash_balance: nextBalance,
-                          metadata: updatedMetadata
-                        })
-                        .eq('id', activeSessionId)
-                        .select()
-                        .maybeSingle();
-
-                      setActiveCashierSession(prev => {
-                        if (!prev) return null;
-                        return {
-                          ...prev,
-                          totalSales: Number(prev.totalSales || 0) + orderTotal,
-                          cashBalance: Number(prev.cashBalance || 0) // Card checkouts update total_sales only
-                        };
-                      });
-
-                      if (updatedSess) {
-                        setActiveCashierSession({
-                          id: updatedSess.id,
-                          cashierName: updatedSess.cashier_name,
-                          openingBalance: parseFloat(updatedSess.opening_balance || 0),
-                          totalSales: parseFloat(updatedSess.total_sales || 0),
-                          cashBalance: parseFloat(updatedSess.cash_balance || 0)
-                        });
-                      }
-                    }
-                  })
-                  .catch(err => {
-                    console.error("Error updating cashier session on card payment:", err);
-                  });
-              }
+              // Update cashier session totals in local state for card orders
+              const orderTotal = parseFloat(payload.new.total_amount || 0);
+              setActiveCashierSession(prev => {
+                if (!prev) return null;
+                return {
+                  ...prev,
+                  totalSales: Number(prev.totalSales || 0) + orderTotal
+                };
+              });
             }
           }
         }
@@ -1893,6 +1825,7 @@ export default function App() {
     console.log("[CASH-TRACE] checkout-enter");
     console.log(`[CASH-TRACE] selected-payment-method: ${paymentMethod}`);
 
+    let isOrderCreated = false;
     try {
       showNotification(isArabic ? "جاري إرسال الطلب..." : "Submitting order...", "info");
 
@@ -1939,8 +1872,12 @@ export default function App() {
       const createdOrder = Array.isArray(orderData) ? orderData[0] : orderData;
       if (!createdOrder?.id) throw new Error('The order was not returned by the accounting checkout.');
 
+      isOrderCreated = true;
       console.log("[CASH-TRACE] order-create-result Order ID:", createdOrder.id);
       console.log("[CASH-TRACE] created-order-shape", createdOrder);
+
+      // Clear cart immediately so resubmission cannot happen
+      setCart([]);
 
       const printableOrder = {
         ...createdOrder,
@@ -1951,70 +1888,18 @@ export default function App() {
       };
       console.log("[CASH-TRACE] printable-order-shape", printableOrder);
 
-      // Update cashier session totals for cash orders
-      if (paymentMethod === 'cash') {
-        const activeSessionId = activeCashierSession?.id || localStorage.getItem('cashier_session_id');
-        if (activeSessionId) {
-          try {
-            const { data: currentSess } = await supabase
-              .from('cashier_sessions')
-              .select('*')
-              .eq('id', activeSessionId)
-              .maybeSingle();
+      // Update active cashier session totals in local React state
+      const orderTotal = parseFloat(createdOrder.total_amount || 0);
+      setActiveCashierSession(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          totalSales: Number(prev.totalSales || 0) + orderTotal,
+          cashBalance: paymentMethod === 'cash' ? Number(prev.cashBalance || 0) + orderTotal : Number(prev.cashBalance || 0)
+        };
+      });
 
-            if (currentSess) {
-              // The database recalculates catalog prices, modifiers, tax and
-              // discounts. Use that authoritative amount for the cash drawer.
-              const orderTotal = parseFloat(createdOrder.total_amount);
-              const nextSales = Number(currentSess.total_sales || 0) + orderTotal;
-              const nextBalance = Number(currentSess.cash_balance || 0) + orderTotal;
-              const currentMetadata = currentSess.metadata || {};
-
-              const updatedMetadata = {
-                ...currentMetadata,
-                finances: {
-                  total_sales: nextSales,
-                  cash_balance: nextBalance
-                }
-              };
-
-              const { data: updatedSess } = await supabase
-                .from('cashier_sessions')
-                .update({
-                  total_sales: nextSales,
-                  cash_balance: nextBalance,
-                  metadata: updatedMetadata
-                })
-                .eq('id', activeSessionId)
-                .select()
-                .maybeSingle();
-
-              setActiveCashierSession(prev => {
-                if (!prev) return null;
-                return {
-                  ...prev,
-                  totalSales: Number(prev.totalSales || 0) + orderTotal,
-                  cashBalance: Number(prev.cashBalance || 0) + orderTotal
-                };
-              });
-
-              if (updatedSess) {
-                setActiveCashierSession({
-                  id: updatedSess.id,
-                  cashierName: updatedSess.cashier_name,
-                  openingBalance: parseFloat(updatedSess.opening_balance || 0),
-                  totalSales: parseFloat(updatedSess.total_sales || 0),
-                  cashBalance: parseFloat(updatedSess.cash_balance || 0)
-                });
-              }
-            }
-          } catch (sessionUpdateErr) {
-            console.error("Error updating cashier session on checkout:", sessionUpdateErr);
-          }
-        }
-      }
-
-      // 3. Complete checkout directly or initiate Stripe BBPOS WisePad 3 connection
+      // Complete checkout directly or initiate Stripe BBPOS WisePad 3 connection
       if (paymentMethod === 'card') {
         if (terminalAvailability.checked && !terminalAvailability.available) {
           showNotification(
@@ -2035,37 +1920,43 @@ export default function App() {
         setActivePaymentRequestId(paymentRequest.id);
         setShowStripeModal(true);
         setStripeStatus(paymentRequest.status || 'pending');
-        setLastCompletedOrder(printableOrder);
 
         if (orderCompleteSoundEnabled) playChime();
-        setCart([]);
         showNotification(isArabic ? "جاري إرسال الطلب لجهاز البطاقة... 💳" : "Payment request sent to terminal... 💳");
       } else {
         // Cash / Direct payment completed
-        setLastCompletedOrder(printableOrder);
-        console.log("[CASH-TRACE] enqueue-before Order ID:", printableOrder.id);
-        enqueueAutoReceiptPrint(printableOrder);
-
         if (orderCompleteSoundEnabled) playChime();
-        setCart([]);
         showNotification(isArabic ? "تم إكمال الطلب وحفظه بنجاح! 🚀" : "Order completed and logged successfully! 🚀");
+
+        try {
+          console.log("[CASH-TRACE] enqueue-before Order ID:", printableOrder.id);
+          enqueueAutoReceiptPrint(printableOrder);
+        } catch (printErr) {
+          console.error("Auto receipt printing error:", printErr);
+          showNotification(isArabic ? "تم حفظ الطلب بنجاح، لكن فشلت طباعة الإيصال ⚠️" : "Order saved successfully, but printing receipt failed ⚠️", "warning");
+        }
       }
     } catch (err) {
-      console.error("DETAILED CHECKOUT ERROR:", err.message, err.details, err.hint, err);
-      const errorCode = `${err?.message || ''} ${err?.details || ''}`;
-      if (errorCode.includes('TAX_CONFIGURATION_MISSING')) {
-        showNotification(
-          isArabic
-            ? "لا يمكن إتمام الطلب: مجموعة الحساب أو إعداد الضريبة لهذا المنتج غير مكتمل."
-            : "Checkout is blocked because a product's accounting group or tax configuration is incomplete.",
-          "error"
-        );
-      } else if (paymentMethod === 'card' && errorCode.trim()) {
-        showNotification(errorCode.slice(0, 180), "error");
-      } else if (errorCode.includes('COUPON_INVALID')) {
-        showNotification(isArabic ? "كود الخصم غير صالح أو غير مفعّل." : "The coupon is invalid or inactive.", "error");
+      if (isOrderCreated) {
+        console.error("POST-CHECKOUT STEP WARNING:", err);
+        showNotification(isArabic ? "تم حفظ الطلب بنجاح، ولكن حدث خطأ في الخطوة التالية ⚠️" : "Order saved successfully, but a post-checkout step had an issue ⚠️", "warning");
       } else {
-        showNotification(isArabic ? "خطأ أثناء إرسال الطلب" : "Error occurred during checkout process", "error");
+        console.error("DETAILED CHECKOUT ERROR:", err.message, err.details, err.hint, err);
+        const errorCode = `${err?.message || ''} ${err?.details || ''}`;
+        if (errorCode.includes('TAX_CONFIGURATION_MISSING')) {
+          showNotification(
+            isArabic
+              ? "لا يمكن إتمام الطلب: مجموعة الحساب أو إعداد الضريبة لهذا المنتج غير مكتمل."
+              : "Checkout is blocked because a product's accounting group or tax configuration is incomplete.",
+            "error"
+          );
+        } else if (paymentMethod === 'card' && errorCode.trim()) {
+          showNotification(errorCode.slice(0, 180), "error");
+        } else if (errorCode.includes('COUPON_INVALID')) {
+          showNotification(isArabic ? "كود الخصم غير صالح أو غير مفعّل." : "The coupon is invalid or inactive.", "error");
+        } else {
+          showNotification(isArabic ? "خطأ أثناء إرسال الطلب" : "Error occurred during checkout process", "error");
+        }
       }
     } finally {
       checkoutInFlightRef.current = false;
