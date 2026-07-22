@@ -1928,9 +1928,6 @@ export default function App() {
       console.log("[CASH-TRACE] order-create-result Order ID:", createdOrder.id);
       console.log("[CASH-TRACE] created-order-shape", createdOrder);
 
-      // Clear cart immediately so resubmission cannot happen
-      setCart([]);
-
       const printableOrder = {
         ...createdOrder,
         raw_payload: {
