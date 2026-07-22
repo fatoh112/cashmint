@@ -10,6 +10,7 @@ const cancelSource = read('../../supabase/functions/cancel-terminal-payment/inde
 const retrieveSource = read('../../supabase/functions/retrieve-terminal-payment-status/index.ts');
 const webhookSource = read('../../supabase/functions/stripe-terminal-webhook/index.ts');
 const manageSource = read('../../supabase/functions/manage-server-driven-reader/index.ts');
+const integrationSource = read('../admin/IntegrationSettings.jsx');
 const completionMigration = read('../../supabase/migrations/20260722121432_secure_server_driven_terminal_completion.sql');
 
 describe('WisePOS E server-driven regression guards', () => {
@@ -96,5 +97,52 @@ describe('WisePOS E server-driven regression guards', () => {
   it('keeps webhook JWT disabled while payment functions require JWT', () => {
     expect(webhookSource).toContain('validStripeSignature');
     expect(webhookSource).not.toContain('authenticatedUser');
+  });
+
+  it('persists platform readers with a normalized null account scope', () => {
+    expect(manageSource).toContain('normalizedStripeAccountId');
+    expect(manageSource).toContain(".is('stripe_account_id', null)");
+    expect(manageSource).toContain(".insert(payload).select().single()");
+  });
+
+  it('updates an existing platform reader by its internal UUID', () => {
+    expect(manageSource).toContain(".eq('stripe_reader_id', stripeReaderId)");
+    expect(manageSource).toContain(".eq('id', existing.id)");
+    expect(manageSource).toContain(".eq('id', raced.id)");
+  });
+
+  it('scopes connected-account readers by stripe_account_id', () => {
+    expect(manageSource).toContain(".eq('stripe_account_id', stripeAccountId)");
+    expect(manageSource).not.toContain("onConflict: 'stripe_account_id,stripe_reader_id'");
+  });
+
+  it('recovers a racing insert from PostgreSQL unique violation 23505', () => {
+    expect(manageSource).toContain("code === '23505'");
+    expect(manageSource).toContain('const raced = await findNormalizedReader');
+    expect(manageSource).toContain('const { data: updated, error: updateError }');
+  });
+
+  it('uses the same persistence path for register and attach_existing', () => {
+    expect(manageSource).toContain("action === 'attach_existing'");
+    expect(manageSource).toContain('const saved = await persistReader(db, payload)');
+    expect(manageSource.match(/persistReader\(db, payload\)/g)).toHaveLength(1);
+  });
+
+  it('shows returned registration failures in Backoffice', () => {
+    expect(integrationSource).toContain('data?.error || error?.message');
+    expect(integrationSource).toContain('setReaderError(message)');
+    expect(integrationSource).toContain('role="alert"');
+  });
+
+  it('prevents double-clicking Reader operations and shows registration loading state', () => {
+    expect(integrationSource).toContain('readerBusyRef.current');
+    expect(integrationSource).toContain("readerAction === 'register'");
+    expect(integrationSource).toContain('disabled={readerBusy || !registrationCodeInput.trim()}');
+  });
+
+  it('leaves the Android Bridge path and provider state controls unchanged', () => {
+    expect(integrationSource).toContain("'stripe_android_bridge'");
+    expect(manageSource).not.toContain('set_active_terminal_provider');
+    expect(manageSource).not.toContain("from('terminal_devices')");
   });
 });

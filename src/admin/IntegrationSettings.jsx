@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import { printReceipt } from '../utils/printerService';
 import PrintingDiagnosticsModal from '../components/admin/PrintingDiagnosticsModal';
@@ -44,6 +44,9 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   const [readerIdInput, setReaderIdInput] = useState('');
   const [registrationCodeInput, setRegistrationCodeInput] = useState('');
   const [readerBusy, setReaderBusy] = useState(false);
+  const readerBusyRef = useRef(false);
+  const [readerAction, setReaderAction] = useState(null);
+  const [readerError, setReaderError] = useState('');
   const [sessions, setSessions] = useState([]);
   const [orders, setOrders] = useState([]);
   const [loadingMonitor, setLoadingMonitor] = useState(false);
@@ -158,16 +161,28 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   }, [store?.id]);
 
   const manageServerReader = async (action, payload = {}) => {
+    if (readerBusyRef.current) return;
     const config = terminalConfigs.find(c => c.provider_type === 'stripe_server_driven');
     if (!config) return showNotification('Create a server-driven payment configuration first.', 'error');
+    readerBusyRef.current = true;
+    setReaderError('');
     try {
       setReaderBusy(true);
-      const { error } = await supabase.functions.invoke('manage-server-driven-reader', { body: { action, payment_config_id: config.id, stripe_reader_id: readerIdInput.trim() || undefined, registration_code: registrationCodeInput.trim() || undefined, ...payload } });
-      if (error) throw error;
+      setReaderAction(action);
+      const { data, error } = await supabase.functions.invoke('manage-server-driven-reader', { body: { action, payment_config_id: config.id, stripe_reader_id: readerIdInput.trim() || undefined, registration_code: registrationCodeInput.trim() || undefined, ...payload } });
+      const functionError = data?.error || error?.message;
+      if (functionError) throw new Error(functionError);
       setReaderIdInput(''); setRegistrationCodeInput(''); await fetchDevicesAndSessions(true);
       showNotification(action === 'register' ? 'WisePOS E registered.' : 'Reader updated.', 'success');
-    } catch (error) { showNotification(error.message || 'Reader operation failed', 'error'); }
-    finally { setReaderBusy(false); }
+    } catch (error) {
+      const message = error?.message || 'Reader operation failed';
+      setReaderError(message);
+      showNotification(message, 'error');
+    } finally {
+      readerBusyRef.current = false;
+      setReaderBusy(false);
+      setReaderAction(null);
+    }
   };
 
   const setActiveProvider = async (config) => {
@@ -759,7 +774,19 @@ export default function IntegrationSettings({ store, setStore, showNotification,
               </div>
               {isServer ? <>
                 <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-500"><span>Reader: <b className="text-slate-700 dark:text-slate-200">{reader?.label || 'Not registered'}</b></span><span>Status: <b className="text-slate-700 dark:text-slate-200">{reader?.status || '—'}</b></span><span>Reader ID: <b className="font-mono text-slate-700 dark:text-slate-200">{reader?.stripe_reader_id || '—'}</b></span><span>Device: <b className="text-slate-700 dark:text-slate-200">{reader?.device_type || '—'}</b></span></div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2"><input value={registrationCodeInput} onChange={e => setRegistrationCodeInput(e.target.value)} placeholder="WisePOS E pairing code" className="px-3 py-2 rounded-lg border bg-transparent text-xs" /><button disabled={readerBusy || !registrationCodeInput.trim()} onClick={() => manageServerReader('register')} className="rounded-lg bg-sky-600 text-white text-xs font-bold px-3 py-2 disabled:opacity-50">Register pairing code</button><input value={readerIdInput} onChange={e => setReaderIdInput(e.target.value)} placeholder="Existing Stripe Reader ID" className="px-3 py-2 rounded-lg border bg-transparent text-xs" /><button disabled={readerBusy || !readerIdInput.trim()} onClick={() => manageServerReader('attach_existing')} className="rounded-lg bg-slate-700 text-white text-xs font-bold px-3 py-2 disabled:opacity-50">Attach existing reader</button></div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input value={registrationCodeInput} onChange={e => setRegistrationCodeInput(e.target.value)} placeholder="WisePOS E pairing code" className="px-3 py-2 rounded-lg border bg-transparent text-xs" />
+                  <button disabled={readerBusy || !registrationCodeInput.trim()} onClick={() => manageServerReader('register')} className="rounded-lg bg-sky-600 text-white text-xs font-bold px-3 py-2 disabled:opacity-50 flex items-center justify-center gap-2">
+                    {readerAction === 'register' && <RefreshCw className="w-3 h-3 animate-spin" />}
+                    {readerAction === 'register' ? 'Registering…' : 'Register pairing code'}
+                  </button>
+                  <input value={readerIdInput} onChange={e => setReaderIdInput(e.target.value)} placeholder="Existing Stripe Reader ID" className="px-3 py-2 rounded-lg border bg-transparent text-xs" />
+                  <button disabled={readerBusy || !readerIdInput.trim()} onClick={() => manageServerReader('attach_existing')} className="rounded-lg bg-slate-700 text-white text-xs font-bold px-3 py-2 disabled:opacity-50 flex items-center justify-center gap-2">
+                    {readerAction === 'attach_existing' && <RefreshCw className="w-3 h-3 animate-spin" />}
+                    {readerAction === 'attach_existing' ? 'Attaching…' : 'Attach existing reader'}
+                  </button>
+                </div>
+                {readerError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{readerError}</p>}
                 <div className="flex gap-2"><button disabled={!reader} onClick={() => manageServerReader('refresh', { reader_id: reader?.id })} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">Refresh</button>{reader && <button onClick={() => manageServerReader(reader.is_enabled ? 'disable' : 'enable', { reader_id: reader.id })} className="rounded-lg border px-3 py-2 text-xs font-bold">{reader.is_enabled ? 'Disable' : 'Enable'}</button>}</div>
               </> : <p className="text-[10px] text-slate-500">Enrollment code, bridge heartbeat, WisePad 3 status, and existing controls remain unchanged.</p>}
               <button disabled={config.is_primary || (isServer && (!reader || reader.status !== 'online'))} onClick={() => setActiveProvider(config)} className="w-full rounded-lg bg-amber-500 text-white text-xs font-bold py-2 disabled:opacity-50">Set as active provider</button>
