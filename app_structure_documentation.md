@@ -359,6 +359,26 @@ The database structure evolves incrementally through version-controlled SQL file
 38. **`20260719020514_allow_store_users_to_check_terminal_availability.sql`**: Allows mapped store users to call `terminal_payment_availability` while preserving the terminal's own authorization path.
 39. **`20260719030000_pos_bundle_tax_preview.sql`**: Includes bundle components in the POS catalog so the browser can display a per-component VAT preview; checkout remains server-authoritative.
 40. **`20260719084000_terminal_card_completion_rpcs.sql`**: Ensures Stripe Terminal webhooks can complete or cancel accounting card orders through `complete_accounting_card_payment` and `cancel_accounting_card_payment` security-definer RPCs.
+41. **`20260719093000_terminal_pos_payment_result_rpc.sql`**: Exposes terminal payment result lookup RPC for POS client.
+42. **`20260719150000_terminal_payment_state_guards.sql`**: Enforces state transition guards on terminal payment requests.
+43. **`20260719162348_nullable_product_vat_rate_legacy_fallback.sql`**: Provides legacy fallback for nullable product VAT rates.
+44. **`20260719163000_terminal_reader_recovery_states.sql`**: Adds terminal reader state recovery RPCs.
+45. **`20260720000000_split_payments_schema.sql`**: Adds split payments database schema (`payment_splits` and `payment_split_parts`).
+46. **`20260720010000_split_payments_rpcs.sql`**: Adds atomic split payment creation, processing, and completion RPCs.
+47. **`20260720020000_allow_split_in_create_accounting_order.sql`**: Extends `create_accounting_order` RPC to support split payment method transactions.
+48. **`20260720030000_restore_create_accounting_order_validations.sql`**: Restores strict tax and coupon validations in `create_accounting_order`.
+49. **`20260720040000_fix_terminal_payment_conflict_target.sql`**: Fixes conflict target in terminal payment upserts.
+50. **`20260720_receipt_templates.sql`**: Creates thermal receipt templates table and default layout settings.
+51. **`20260720_update_receipt_templates_check.sql`**: Updates receipt template check constraints.
+52. **`20260721153000_superadmin_upgrades.sql`**: Adds Superadmin global analytics RPC and platform audit logging.
+53. **`20260721160000_system_health.sql`**: Adds system health monitoring RPCs.
+54. **`20260721170000_fix_is_superadmin.sql`**: Hardens `is_superadmin()` security definer helper function.
+55. **`20260721180000_corrective_upgrades.sql`**: Corrects global analytics queries and adds store split payment feature flag sync trigger.
+56. **`20260721190000_revoke_unnecessary_privileges.sql`**: Revokes default public DDL/DML permissions from sensitive tables.
+57. **`20260721200000_add_role_check_constraint.sql`**: Enforces strict role check constraint (`admin`, `cashier`, `superadmin`) on `store_users`.
+58. **`20260722010000_enable_rls_core_pos_tables.sql`**: Enables RLS on `categories`, `products`, `pos_devices`, and `cashier_sessions`, revokes dangerous privileges (`TRUNCATE`, `TRIGGER`, `REFERENCES`), and restricts unauthenticated table access.
+59. **`20260722011000_sanitize_pos_catalog_store_payload.sql`**: Hardens `get_pos_catalog(uuid)` with `search_path = public, pg_temp` and excludes `hubrise_api_key`.
+60. **`20260722012000_whitelist_pos_catalog_store_fields.sql`**: Explicitly whitelists approved POS-facing store payload fields in `get_pos_catalog(uuid)` using `jsonb_build_object` to prevent accidental sensitive key exposure.
 
 ---
 
@@ -419,7 +439,27 @@ cashpilot/
 │   │   ├── 20260719020000_tax_safe_combos_and_category_overrides.sql
 │   │   ├── 20260719020514_allow_store_users_to_check_terminal_availability.sql
 │   │   ├── 20260719030000_pos_bundle_tax_preview.sql
-│   │   └── 20260719084000_terminal_card_completion_rpcs.sql
+│   │   ├── 20260719084000_terminal_card_completion_rpcs.sql
+│   │   ├── 20260719093000_terminal_pos_payment_result_rpc.sql
+│   │   ├── 20260719150000_terminal_payment_state_guards.sql
+│   │   ├── 20260719162348_nullable_product_vat_rate_legacy_fallback.sql
+│   │   ├── 20260719163000_terminal_reader_recovery_states.sql
+│   │   ├── 20260720000000_split_payments_schema.sql
+│   │   ├── 20260720010000_split_payments_rpcs.sql
+│   │   ├── 20260720020000_allow_split_in_create_accounting_order.sql
+│   │   ├── 20260720030000_restore_create_accounting_order_validations.sql
+│   │   ├── 20260720040000_fix_terminal_payment_conflict_target.sql
+│   │   ├── 20260720_receipt_templates.sql
+│   │   ├── 20260720_update_receipt_templates_check.sql
+│   │   ├── 20260721153000_superadmin_upgrades.sql
+│   │   ├── 20260721160000_system_health.sql
+│   │   ├── 20260721170000_fix_is_superadmin.sql
+│   │   ├── 20260721180000_corrective_upgrades.sql
+│   │   ├── 20260721190000_revoke_unnecessary_privileges.sql
+│   │   ├── 20260721200000_add_role_check_constraint.sql
+│   │   ├── 20260722010000_enable_rls_core_pos_tables.sql
+│   │   ├── 20260722011000_sanitize_pos_catalog_store_payload.sql
+│   │   └── 20260722012000_whitelist_pos_catalog_store_fields.sql
 │   └── functions/                    # Deno Edge Functions
 │       ├── ai-business-analyst/      # Deno-Kimi Business Chatcompletion proxy endpoint
 │       ├── ai-menu-assistant/        # OCR Vision extraction endpoint
@@ -473,6 +513,7 @@ cashpilot/
     │       └── UserManagerDrawer.jsx    # Slide-over user manager drawer with real-time websocket sync
     └── utils/
         ├── accountingExports.js      # CSV formatting and browser download helper
+        ├── checkoutRegression.test.js # POS checkout crash & retry safety unit tests
         ├── printerService.js          # Epson ePOS XML generator, pulse (drawer kick), & silent iframe print
         ├── storeTheme.js              # Logo palette extraction and accessible theme generation
         ├── storeTheme.test.js         # Theme utility tests
@@ -534,6 +575,12 @@ Key features include:
     - Backoffice login enforces superadmin restriction checks via the `is_superadmin` RPC function, email domain validation (`@cashmint.online`), or role mappings, rendering cyan-blue glows and animated security accents.
 11. **Card availability gate:**
     - The POS calls `terminal_payment_availability` on startup and periodically afterwards. Card/Visa remains disabled until the Android bridge has reported an online, connected reader within the heartbeat window. This prevents a cashier from creating a card checkout that no reader can process.
+12. **Retry-Safe Checkout & Crash Prevention:**
+    - Clears `cart` immediately (`setCart([])`) upon receiving `createdOrder.id` from `create_accounting_order` to prevent double-click or retry resubmissions.
+    - Uses `checkoutInFlightRef.current` execution lock to reject concurrent checkout calls.
+    - Removed stale `setLastCompletedOrder` calls that caused unhandled `ReferenceError` crashes.
+    - Replaced unauthenticated direct REST queries (`.from('cashier_sessions')`) with in-memory `activeCashierSession` React state updates (`totalSales`, `cashBalance`), eliminating 401 Unauthorized errors while preserving database RLS protection.
+    - Separates order creation errors from post-order follow-up UI/printing failures (e.g., auto receipt print failure triggers a warning notification without failing the saved order or displaying false checkout errors).
 
 ---
 
@@ -838,3 +885,6 @@ Coordinates advanced option configurations and AI menu imports.
 20. **CSV Menu Import & Excel Compatibility:** Integrated `CsvImportModal` with intelligent delimiter detection and UTF-8 BOM encoding for correct Arabic character handling in Excel, facilitating quick catalog setup.
 21. **Robust Checkout Completion & Webhooks:** Deployed secure webhook completion and cancellation RPC functions for Stripe Terminal card orders, ensuring synchronized status between the Android payment bridge, Stripe Terminal API, and checkout orders.
 22. **Silent Automated Receipts:** Configured direct printer SOAP requests to skip browser print prompt fallbacks during automatic print operations, eliminating GUI blockages when direct printing is offline.
+23. **Core Table RLS Hardening & Privilege Revokes:** Enforced Row Level Security across core POS tables (`categories`, `products`, `pos_devices`, `cashier_sessions`), revoked dangerous table privileges (`TRUNCATE`, `TRIGGER`, `REFERENCES`), and restricted unauthenticated REST table access.
+24. **POS Catalog Store Payload Whitelisting:** Sanitized `get_pos_catalog(uuid)` with `search_path = public, pg_temp` and explicit `jsonb_build_object` field whitelisting (`id`, `name`, `business_type`, `logo_url`, `theme_color`, `primary_color`, `bg_color`, `banner_url`, `theme_config`, `onboarding_status`, `onboarding_completed`, `split_payment_enabled`) to prevent accidental key exposure.
+25. **Crash-Proof & Retry-Safe Checkout Flow:** Fixed `ReferenceError` crashes, separated pre-order creation errors from post-order receipt printing warnings, cleared cart state atomically on order creation, and eliminated duplicate order resubmissions. Added comprehensive Vitest regression test suite (`checkoutRegression.test.js`).
