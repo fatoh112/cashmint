@@ -1,18 +1,21 @@
 import React from 'react';
-import CashmintLogo from '../../components/branding/CashmintLogo';
+import cashmintLogo from '../../assets/branding/cashmint-logo.png';
 
 export default function LandingFooter({ onLoginClick }) {
   const currentYear = new Date().getFullYear();
 
   return (
-    <footer className="bg-slate-950 text-slate-400 py-12 border-t border-slate-800 font-sans transition-colors">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-        
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6 pb-8 border-b border-slate-800/80">
+    <footer className="bg-slate-950 border-t border-slate-800/80 text-slate-400 py-12 transition-colors">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
           
           {/* Brand Info */}
           <div className="flex items-center gap-3">
-            <CashmintLogo size="sm" badgeBg={true} />
+            <div className="inline-flex items-center gap-2 select-none">
+              <div className="relative flex items-center justify-center overflow-hidden rounded-xl bg-white p-1 shadow-sm border border-slate-200/80">
+                <img src={cashmintLogo} alt="Cashmint" className="h-8 max-w-[130px] object-contain w-auto" />
+              </div>
+            </div>
             <span className="text-xs text-slate-500 border-r border-slate-800 pr-3 mr-1">
               نظام نقاط بيع وإدارة مطاعم
             </span>

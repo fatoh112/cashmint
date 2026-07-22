@@ -1,11 +1,17 @@
-import React from 'react';
 import cashmintLogo from '../../assets/branding/cashmint-logo.png';
 
 /**
  * Cashmint official logo component
- * Supports header, sidebar, login screen, landing page, and compact navigation sizes.
- * Preserves exact aspect ratio and handles background contrast cleanly.
+ * Lightweight, zero-dependency brand element.
  */
+const sizeMap = {
+  xs: 'h-6 max-w-[100px]',
+  sm: 'h-8 max-w-[130px]',
+  md: 'h-10 max-w-[160px]',
+  lg: 'h-14 max-w-[220px]',
+  xl: 'h-20 max-w-[280px]',
+};
+
 export default function CashmintLogo({
   size = 'md',
   className = '',
@@ -13,14 +19,6 @@ export default function CashmintLogo({
   showWordmarkText = false,
   badgeBg = true
 }) {
-  const sizeMap = {
-    xs: 'h-6 max-w-[100px]',
-    sm: 'h-8 max-w-[130px]',
-    md: 'h-10 max-w-[160px]',
-    lg: 'h-14 max-w-[220px]',
-    xl: 'h-20 max-w-[280px]',
-  };
-
   const selectedSizeClass = sizeMap[size] || sizeMap.md;
 
   return (

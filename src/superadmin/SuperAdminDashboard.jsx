@@ -3,7 +3,7 @@ import { supabase } from '../supabaseClient';
 import StoresManagement from './StoresManagement';
 import StoreDetail from './StoreDetail';
 import AIChatWidget from '../components/admin/AIChatWidget';
-import CashmintLogo from '../components/branding/CashmintLogo';
+import cashmintLogo from '../assets/branding/cashmint-logo.png';
 import { 
   Store, 
   BarChart2, 
@@ -348,7 +348,7 @@ export default function SuperAdminDashboard({ session, setView: _setView }) {
           
           {/* Logo / Header */}
           <div className="p-6 border-b border-slate-800/80 bg-slate-900/60 flex items-center gap-3 shrink-0">
-            <CashmintLogo size="sm" badgeBg={true} />
+            <img src={cashmintLogo} alt="Cashmint" className="h-8 max-w-[130px] object-contain w-auto rounded-xl bg-white p-1 shadow-sm border border-slate-200/80" />
             <div>
               <h1 className="text-xs font-black text-white tracking-wider">MASTER CENTRAL</h1>
               <p className="text-[9px] text-cyan-400 font-extrabold tracking-widest uppercase">Super Admin Panel</p>
