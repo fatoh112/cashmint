@@ -36,10 +36,13 @@ console.log("MODE AUDIT", {
 
 const isStoreOnboarded = (store) => Boolean(store?.onboarding_completed && store?.onboarding_status === 'completed');
 
-// Lazy load onboarding wizard and superadmin components for build-time tree-shaking
+// Lazy load onboarding wizard, superadmin, and landing page components for build-time tree-shaking
 const OnboardingWizard = React.lazy(() => import('./components/OnboardingWizard'));
 const SuperAdminDashboard = isMasterHost
   ? React.lazy(() => import('./superadmin/SuperAdminDashboard'))
+  : () => null;
+const LandingPage = isMasterHost
+  ? React.lazy(() => import('./landing/LandingPage'))
   : () => null;
 import {
   Utensils,
@@ -76,7 +79,8 @@ import {
   Pencil,
   Printer,
   UserCheck,
-  RefreshCw
+  RefreshCw,
+  ArrowRight
 } from 'lucide-react';
 
 const DEFAULT_PIN = import.meta.env.VITE_ADMIN_PIN || "1234";
@@ -290,6 +294,7 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [isCheckingStore, setIsCheckingStore] = useState(true);
+  const [showMasterLogin, setShowMasterLogin] = useState(false);
 
   // Static Device Authentication states
   const [deviceAuth, setDeviceAuth] = useState(null); // { deviceId, storeId }
@@ -2667,7 +2672,18 @@ export default function App() {
     }
 
     if (!session) {
-      return <BackOfficeLogin />;
+      if (isMasterHost && !showMasterLogin) {
+        return (
+          <React.Suspense fallback={
+            <div dir="rtl" className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
+              <div className="w-10 h-10 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin" />
+            </div>
+          }>
+            <LandingPage onLoginClick={() => setShowMasterLogin(true)} />
+          </React.Suspense>
+        );
+      }
+      return <BackOfficeLogin onBackToLanding={() => setShowMasterLogin(false)} />;
     }
 
     // Force onboarding if the store is unconfigured or null (unless it's the master host)
@@ -4239,7 +4255,7 @@ export default function App() {
   );
 }
 
-function BackOfficeLogin() {
+function BackOfficeLogin({ onBackToLanding }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -4419,7 +4435,17 @@ function BackOfficeLogin() {
           </button>
         </form>
 
-        <div className="text-center">
+        <div className="text-center space-y-3">
+          {onBackToLanding && (
+            <button
+              type="button"
+              onClick={onBackToLanding}
+              className="inline-flex items-center gap-2 text-xs font-bold text-slate-300 hover:text-white transition-colors cursor-pointer bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 px-4 py-2.5 rounded-xl shadow-xs"
+            >
+              <ArrowRight className="w-4 h-4 text-cyan-400" />
+              <span>العودة إلى الصفحة الرئيسية</span>
+            </button>
+          )}
           <p className="text-xs text-slate-600">
             Secured by Supabase Auth
           </p>
