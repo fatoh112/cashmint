@@ -314,8 +314,10 @@ export default function App() {
 
   const handleAccountDeleted = async () => {
     console.warn("Account or store record not found. Terminating session...");
+    const savedPrinterIP = localStorage.getItem('local_printer_ip');
     localStorage.clear();
     sessionStorage.clear();
+    if (savedPrinterIP) localStorage.setItem('local_printer_ip', savedPrinterIP);
     localStorage.setItem('auth_error_reason', 'deleted');
     try {
       await supabase.auth.signOut();
@@ -1607,11 +1609,7 @@ export default function App() {
       if (['failed', 'cancelled', 'expired'].includes(request.status)) {
         finalized = true;
         showNotification(request.failure_message || 'Card payment could not be confirmed', 'error');
-        setShowStripeModal(false);
-        setActivePaymentRequestId(null);
-        setActivePaymentOrderId(null);
-        activePaymentOrderIdRef.current = null;
-        activePaymentOrderRef.current = null;
+        setShowStripeModal(true);
       }
     };
     const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
@@ -1878,6 +1876,8 @@ export default function App() {
     console.log(`[CASH-TRACE] selected-payment-method: ${paymentMethod}`);
 
     let isOrderCreated = false;
+    let paymentRequestCreated = false;
+    let createdOrderId = null;
     try {
       showNotification(isArabic ? "جاري إرسال الطلب..." : "Submitting order...", "info");
 
@@ -1925,6 +1925,7 @@ export default function App() {
       if (!createdOrder?.id) throw new Error('The order was not returned by the accounting checkout.');
 
       isOrderCreated = true;
+      createdOrderId = createdOrder.id;
       console.log("[CASH-TRACE] order-create-result Order ID:", createdOrder.id);
       console.log("[CASH-TRACE] created-order-shape", createdOrder);
 
@@ -1964,6 +1965,7 @@ export default function App() {
         });
         if (paymentRequestError) throw paymentRequestError;
         if (!paymentRequest?.id) throw new Error('Card payment bridge did not accept the payment request.');
+        paymentRequestCreated = true;
         const providerType = paymentRequest.provider_type || terminalAvailability.providerType || 'stripe_android_bridge';
         activePaymentOrderRef.current = printableOrder;
         setActivePaymentOrderId(createdOrder.id);
@@ -1994,6 +1996,17 @@ export default function App() {
       }
     } catch (err) {
       if (isOrderCreated) {
+        if (paymentMethod === 'card' && !paymentRequestCreated) {
+          try {
+            const { error: cleanupError } = await supabase.rpc('cancel_accounting_card_payment', {
+              p_order_id: createdOrderId,
+              p_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+            });
+            if (cleanupError) console.error('PENDING CARD ORDER CLEANUP ERROR:', cleanupError);
+          } catch (cleanupError) {
+            console.error('PENDING CARD ORDER CLEANUP ERROR:', cleanupError);
+          }
+        }
         console.error("POST-CHECKOUT STEP WARNING:", err);
         showNotification(isArabic ? "تم حفظ الطلب بنجاح، ولكن حدث خطأ في الخطوة التالية ⚠️" : "Order saved successfully, but a post-checkout step had an issue ⚠️", "warning");
       } else {
@@ -3542,11 +3555,33 @@ export default function App() {
               {stripeStatus.replaceAll('_', ' ')}
             </p>
 
-            {stripeStatus === 'failed' && activePaymentProvider === 'stripe_server_driven' && (
+            {stripeStatus === 'failed' && (
               <button
                 onClick={async () => {
-                  const { error } = await supabase.functions.invoke('retry-server-driven-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
-                  if (error) showNotification(error.message || 'Retry card payment failed', 'error');
+                  try {
+                    if (activeSplit?.split_id) {
+                      await handleRetryCardPayment();
+                    } else if (activePaymentProvider === 'stripe_server_driven') {
+                      const { error } = await supabase.functions.invoke('retry-server-driven-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
+                      if (error) throw error;
+                      const retryRequestId = activePaymentRequestId;
+                      setActivePaymentRequestId(null);
+                      setTimeout(() => setActivePaymentRequestId(retryRequestId), 0);
+                    } else {
+                      const { data, error } = await supabase.rpc('request_terminal_card_payment', {
+                        p_order_id: activePaymentOrderId,
+                        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+                      });
+                      if (error) throw error;
+                      const nextRequest = Array.isArray(data) ? data[0] : data;
+                      if (!nextRequest?.id) throw new Error('Card payment retry was not accepted.');
+                      setActivePaymentRequestId(nextRequest.id);
+                    }
+                    setStripeStatus('pending');
+                    setShowStripeModal(true);
+                  } catch (error) {
+                    showNotification(error.message || 'Retry card payment failed', 'error');
+                  }
                 }}
                 className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs cursor-pointer"
               >Retry Card</button>
@@ -3556,15 +3591,20 @@ export default function App() {
               <button
                 onClick={async () => {
                   try {
-                    const { error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
+                    const { data, error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
                     if (error) throw error;
-                  } catch (e) { }
-                  setShowStripeModal(false);
-                  setActivePaymentOrderId(null);
-                  setActivePaymentRequestId(null);
-                  activePaymentOrderIdRef.current = null;
-                  activePaymentOrderRef.current = null;
-                  showNotification('Card payment process cancelled', 'error');
+                    if (data?.status === 'cancelled') {
+                      setShowStripeModal(false);
+                      setActivePaymentOrderId(null);
+                      setActivePaymentRequestId(null);
+                      activePaymentOrderIdRef.current = null;
+                      activePaymentOrderRef.current = null;
+                    }
+                  } catch (e) {
+                    showNotification(e.message || 'Card payment cancellation failed', 'error');
+                    return;
+                  }
+                  showNotification('Card payment cancellation requested', 'info');
                 }}
                 className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >

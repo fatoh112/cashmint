@@ -85,8 +85,10 @@ export default function AdminDashboard({ store, setStore, session, setView: _set
         }
       } catch (err) {
         console.error("Strict database verification failed:", err);
+        const savedPrinterIP = localStorage.getItem('local_printer_ip');
         localStorage.clear();
         sessionStorage.clear();
+        if (savedPrinterIP) localStorage.setItem('local_printer_ip', savedPrinterIP);
         localStorage.setItem('auth_error_reason', 'deleted');
         try {
           await supabase.auth.signOut();

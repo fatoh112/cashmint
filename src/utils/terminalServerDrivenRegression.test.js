@@ -10,7 +10,7 @@ const cancelSource = read('../../supabase/functions/cancel-terminal-payment/inde
 const retrieveSource = read('../../supabase/functions/retrieve-terminal-payment-status/index.ts');
 const webhookSource = read('../../supabase/functions/stripe-terminal-webhook/index.ts');
 const manageSource = read('../../supabase/functions/manage-server-driven-reader/index.ts');
-const completionMigration = read('../../supabase/migrations/20260722121030_secure_server_driven_terminal_completion.sql');
+const completionMigration = read('../../supabase/migrations/20260722121432_secure_server_driven_terminal_completion.sql');
 
 describe('WisePOS E server-driven regression guards', () => {
   it('sends POS device credentials with server-driven operations', () => {
