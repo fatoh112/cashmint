@@ -564,11 +564,10 @@ export default function ReceiptDesigner({ store, showNotification, isArabic }) {
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-400 uppercase block">{isArabic ? "لغة الطباعة" : "Language Mode"}</label>
                   <select
-                    value={config.language_mode || 'pos_language'}
+                    value={config.language_mode || 'en'}
                     onChange={(e) => updateNestedConfig('language_mode', e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:border-indigo-500"
                   >
-                    <option value="pos_language">{isArabic ? "تتبع لغة POS النشطة" : "Match active POS language"}</option>
                     <option value="en">English (الإنجليزية)</option>
                     <option value="ar">العربية (Arabic)</option>
                     <option value="fr">Français (الفرنسية)</option>

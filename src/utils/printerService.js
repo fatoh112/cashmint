@@ -5,7 +5,7 @@
  * Supports Cashier Receipts, Customer Receipts, and Kitchen Tickets with Header Branding Customizations.
  */
 
-import { mergeAndEnforceReceiptConfig, getReceiptTranslation } from './receiptSchema';
+import { mergeAndEnforceReceiptConfig, getReceiptTranslation, normalizeReceiptLanguage } from './receiptSchema';
 import { addDiagnosticLog } from './diagnosticLogger';
 
 /**
@@ -199,10 +199,7 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
   const doubleSeparator = '='.repeat(width);
 
   // Determine active language
-  let lang = config.language_mode;
-  if (lang === 'pos_language') {
-    lang = options.isArabic ? 'ar' : 'en';
-  }
+  const lang = normalizeReceiptLanguage(config.language_mode);
 
   const t = (key) => getReceiptTranslation(key, lang);
   let xml = '';
@@ -428,10 +425,7 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
       const isKitchen = outputType === 'kitchen_ticket';
       const cssWidth = config.paper_width === 58 ? '54mm' : '72mm';
 
-      let lang = config.language_mode;
-      if (lang === 'pos_language') {
-        lang = options.isArabic ? 'ar' : 'en';
-      }
+      const lang = normalizeReceiptLanguage(config.language_mode);
 
       const t = (key) => getReceiptTranslation(key, lang);
       const isRtl = lang === 'ar';

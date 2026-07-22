@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <rect width="512" height="512" rx="128" fill="#0F172A"/>
-  <rect x="40" y="40" width="432" height="432" rx="96" fill="#FFFFFF" stroke="#06b6d4" stroke-width="16"/>
-  <g transform="translate(64, 180) scale(0.216)">
-    <path d="M256 120V392M200 160H285C315 160 330 175 330 200C330 230 300 245 256 256C210 267 182 282 182 312C182 337 197 352 227 352H312" stroke="#10B981" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
-  </g>
-  <rect x="140" y="360" width="232" height="48" rx="24" fill="#0F172A" stroke="#06b6d4" stroke-width="4"/>
-  <text x="256" y="392" text-anchor="middle" fill="#eab308" font-family="system-ui, sans-serif" font-weight="900" font-size="26" letter-spacing="3">MASTER</text>
-</svg>

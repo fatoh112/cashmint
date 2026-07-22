@@ -65,6 +65,7 @@ function modePwaPlugin(mode) {
 
       // Strip existing favicon/apple-touch-icon links from html to avoid duplicates
       transformed = transformed.replace(/<link rel="(icon|apple-touch-icon|manifest)".*?>\n?/gi, '')
+      transformed = transformed.replace(/<meta name="theme-color" content=".*?" \/>\n?/gi, '')
 
       // Update viewport tag for POS mode
       if (mode === 'pos') {
@@ -74,18 +75,20 @@ function modePwaPlugin(mode) {
         )
       }
 
-      // Inject mode-specific PWA links into <head>
-      const pwaTags = `
-    <link rel="manifest" href="/manifest.webmanifest" />
+      // POS is the only installable PWA. Store and Master receive normal branding only.
+      const brandingTags = `
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <meta name="theme-color" content="${config.themeColor}" />
+`
+      const pwaTags = mode === 'pos' ? `${brandingTags}
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="${config.shortName}" />
-    <meta name="theme-color" content="${config.themeColor}" />
-`
+` : brandingTags
 
       return transformed.replace('</head>', `${pwaTags}  </head>`)
     },
@@ -96,7 +99,9 @@ function modePwaPlugin(mode) {
       const pwaSourceDir = path.resolve(`public/pwa/${mode}`)
 
       if (fs.existsSync(pwaSourceDir) && fs.existsSync(targetOutDir)) {
-        const files = fs.readdirSync(pwaSourceDir)
+        const files = mode === 'pos'
+          ? ['favicon.svg', 'favicon-16x16.png', 'favicon-32x32.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'maskable-icon.png', 'manifest.webmanifest']
+          : ['favicon.svg', 'favicon-16x16.png', 'favicon-32x32.png']
         for (const file of files) {
           fs.copyFileSync(
             path.join(pwaSourceDir, file),
@@ -106,12 +111,17 @@ function modePwaPlugin(mode) {
         console.log(`✓ Copied ${mode} PWA icon assets & manifest into ${config.outDir}`)
       }
 
-      // Ensure sw.js is only present in dist-pos
+      // Vite copies public/pwa recursively; remove that source tree from every output.
+      const copiedPwaTree = path.join(targetOutDir, 'pwa')
+      if (fs.existsSync(copiedPwaTree)) {
+        fs.rmSync(copiedPwaTree, { recursive: true, force: true })
+      }
+
+      // Store and Master are normal web applications, not installable PWAs.
       if (mode !== 'pos') {
-        const swPath = path.join(targetOutDir, 'sw.js')
-        if (fs.existsSync(swPath)) {
-          fs.unlinkSync(swPath)
-          console.log(`✓ Removed sw.js from non-POS build: ${config.outDir}`)
+        for (const file of ['sw.js', 'manifest.json', 'manifest.webmanifest', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'maskable-icon.png']) {
+          const filePath = path.join(targetOutDir, file)
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
         }
       }
     }

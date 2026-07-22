@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Printer, RefreshCw } from 'lucide-react';
 import { printReceipt } from '../../utils/printerService';
-import { mergeAndEnforceReceiptConfig, getReceiptTranslation } from '../../utils/receiptSchema';
+import { mergeAndEnforceReceiptConfig, getReceiptTranslation, normalizeReceiptLanguage } from '../../utils/receiptSchema';
 
 export default function ReceiptPreview({ config: inputConfig, store, isArabic, templateType = 'pos_receipt' }) {
   const [printing, setPrinting] = useState(false);
@@ -9,10 +9,7 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
   const isKitchen = templateType === 'kitchen_ticket';
 
   const is58mm = config.paper_width === 58;
-  let lang = config.language_mode;
-  if (lang === 'pos_language') {
-    lang = isArabic ? 'ar' : 'en';
-  }
+  const lang = normalizeReceiptLanguage(config.language_mode);
   const t = (key) => getReceiptTranslation(key, lang);
   const isRtl = lang === 'ar';
 

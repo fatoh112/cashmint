@@ -343,22 +343,35 @@ for (const modeKey of Object.keys(MODES)) {
   // 1. Generate SVG
   fs.writeFileSync(path.join(modeDir, 'favicon.svg'), generateModeSvg(modeKey));
 
-  // 2. Generate required PNG icons
+  // 2. Generate normal favicons for every mode. Only POS gets installable-PWA assets.
   const iconConfigs = [
-    { name: 'icon-192.png', size: 192, maskable: false },
-    { name: 'icon-512.png', size: 512, maskable: false },
-    { name: 'maskable-icon.png', size: 512, maskable: true },
-    { name: 'apple-touch-icon.png', size: 180, maskable: false },
     { name: 'favicon-32x32.png', size: 32, maskable: false },
     { name: 'favicon-16x16.png', size: 16, maskable: false }
   ];
+  if (modeKey === 'pos') {
+    iconConfigs.unshift(
+      { name: 'icon-192.png', size: 192, maskable: false },
+      { name: 'icon-512.png', size: 512, maskable: false },
+      { name: 'maskable-icon.png', size: 512, maskable: true },
+      { name: 'apple-touch-icon.png', size: 180, maskable: false }
+    );
+  } else {
+    for (const file of ['apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'maskable-icon.png', 'manifest.json', 'manifest.webmanifest']) {
+      const filePath = path.join(modeDir, file);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+  }
 
   for (const cfg of iconConfigs) {
     const pngBuf = createModeIconBuffer(cfg.size, modeKey, cfg.maskable);
     fs.writeFileSync(path.join(modeDir, cfg.name), pngBuf);
   }
 
-  // 3. Generate Web App Manifest referencing ONLY icon-192.png, icon-512.png, maskable-icon.png
+  // 3. Generate one canonical Web App Manifest for POS only.
+  if (modeKey !== 'pos') {
+    continue;
+  }
+
   const manifestData = {
     id: '/',
     name: MODES[modeKey].name,
@@ -394,7 +407,6 @@ for (const modeKey of Object.keys(MODES)) {
 
   const manifestStr = JSON.stringify(manifestData, null, 2);
   fs.writeFileSync(path.join(modeDir, 'manifest.webmanifest'), manifestStr);
-  fs.writeFileSync(path.join(modeDir, 'manifest.json'), manifestStr);
 
   console.log(`✓ Branded icons & manifest generated for mode: ${modeKey}`);
 }

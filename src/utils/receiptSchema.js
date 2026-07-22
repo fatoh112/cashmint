@@ -12,12 +12,19 @@ export const BELGIUM_LOCKED_FIELDS = [
   'tax_breakdown.show_detailed_rates'
 ];
 
+export const RECEIPT_LANGUAGES = ['en', 'ar', 'fr', 'nl'];
+
+// Legacy templates used `pos_language`, which incorrectly followed the global UI language.
+export function normalizeReceiptLanguage(language = 'en') {
+  return RECEIPT_LANGUAGES.includes(language) ? language : 'en';
+}
+
 /**
  * Default Cashier Receipt Configuration (Full Receipt)
  */
 export const DEFAULT_CASHIER_CONFIG = {
   paper_width: 80,
-  language_mode: 'pos_language',
+  language_mode: 'en',
   styles: {
     font_size: 'normal',
     divider_style: 'single',
@@ -93,7 +100,7 @@ export const DEFAULT_CUSTOMER_CONFIG = {
  */
 export const DEFAULT_KITCHEN_CONFIG = {
   paper_width: 80,
-  language_mode: 'pos_language',
+  language_mode: 'en',
   styles: {
     font_size: 'large',
     divider_style: 'double',
@@ -311,6 +318,7 @@ export function mergeAndEnforceReceiptConfig(customConfig = {}, templateType = '
     footer: { ...defaultConfig.footer, ...(customConfig.footer || {}) },
     sections_order: customConfig.sections_order || defaultConfig.sections_order
   };
+  merged.language_mode = normalizeReceiptLanguage(merged.language_mode);
 
   // Enforce Belgium legal locks only for Cashier / POS Receipts and Customer Receipts
   if (templateType !== 'kitchen_ticket') {
