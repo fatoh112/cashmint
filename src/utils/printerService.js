@@ -5,7 +5,7 @@
  * Supports Cashier Receipts, Customer Receipts, and Kitchen Tickets with Header Branding Customizations.
  */
 
-import { mergeAndEnforceReceiptConfig, getReceiptTranslation, normalizeReceiptLanguage } from './receiptSchema';
+import { mergeAndEnforceReceiptConfig, getReceiptTranslation, normalizeReceiptLanguage, getLocalizedReceiptText, getLocalizedReceiptPayment } from './receiptSchema';
 import { addDiagnosticLog } from './diagnosticLogger';
 
 /**
@@ -188,6 +188,7 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
   const config = mergeAndEnforceReceiptConfig(options.templateConfig || {}, outputType);
   const store = normalizeStoreInfo(storeInput, config);
   const isKitchen = outputType === 'kitchen_ticket';
+  const includeLegacyPaymentSections = options.includeLegacyPaymentSections === true;
 
   console.log(`[LOGO-TRACE] template-type: ${outputType}`);
   console.log(`[LOGO-TRACE] show-logo: ${Boolean(config.header?.show_logo)}`);
@@ -207,8 +208,9 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
   const raw = order.raw_payload || {};
   const items = raw.cart_items || [];
   const subtotal = Number(order.total_amount || 0);
-  const vatAmount = Number(order.vat_amount ?? (subtotal * (0.12 / 1.12)));
-  const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? (subtotal - vatAmount));
+  const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? subtotal);
+  const vatAmount = Number(order.vat_amount ?? Math.max(0, subtotal - subtotalWithoutVat));
+  const receiptVatRate = raw.vat_rate ?? raw.vatRate ?? order.vat_rate ?? order.vatRate ?? raw.cart_items?.find((item) => item.vat_rate != null || item.vatRate != null)?.vat_rate ?? null;
 
   // Render sections in configured order
   const sectionsOrder = config.sections_order || ['header', 'meta', 'items', 'subtotals', 'tax_breakdown', 'payments', 'footer'];
@@ -279,8 +281,8 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
 
         if (config.meta?.show_timestamp) {
           const dateStr = raw.timestamp
-            ? new Date(raw.timestamp).toLocaleString(lang === 'ar' ? 'ar-BE' : 'en-BE')
-            : new Date().toLocaleString('en-BE');
+            ? new Date(raw.timestamp).toLocaleString(lang === 'ar' ? 'ar-BE' : lang === 'fr' ? 'fr-BE' : lang === 'nl' ? 'nl-BE' : 'en-BE')
+            : new Date().toLocaleString(lang === 'ar' ? 'ar-BE' : lang === 'fr' ? 'fr-BE' : lang === 'nl' ? 'nl-BE' : 'en-BE');
           xml += `<text align="left">${escapeXML(t('date'))}: ${escapeXML(dateStr)}&#10;</text>`;
         }
 
@@ -316,7 +318,7 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
         xml += `<text align="left">${separator}&#10;</text>`;
 
         items.forEach(item => {
-          const leftPart = `${item.quantity}x ${item.name}`;
+          const leftPart = `${item.quantity}x ${getLocalizedReceiptText(item, lang)}`;
           if (showPrices) {
             const rightPart = `${parseFloat(item.price * item.quantity).toFixed(2)} EUR`;
             xml += `<text align="left" ${isKitchen ? 'em="true"' : ''}>${escapeXML(formatLine(leftPart, rightPart, width))}&#10;</text>`;
@@ -326,7 +328,7 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
 
           if (config.items?.show_modifiers && item.modifiers && item.modifiers.length > 0) {
             item.modifiers.forEach(mod => {
-              const modLeft = `  + ${mod.name}`;
+              const modLeft = `  + ${getLocalizedReceiptText(mod, lang)}`;
               if (showPrices && mod.price_adjustment) {
                 const modRight = `+${parseFloat(mod.price_adjustment * item.quantity).toFixed(2)} EUR`;
                 xml += `<text align="left">${escapeXML(formatLine(modLeft, modRight, width))}&#10;</text>`;
@@ -355,8 +357,8 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
         if (!isKitchen && config.tax_breakdown?.show_detailed_rates) {
           xml += `<text align="left" em="true">${escapeXML(t('vat_breakdown'))}&#10;</text>`;
           xml += `<text align="left">${escapeXML(formatLine(`${t('vat_rate')} | ${t('vat_net')}`, t('vat_tax'), width))}&#10;</text>`;
-          const activeRate = raw.order_type === 'dine_in' ? '12%' : '6%';
-          xml += `<text align="left">${escapeXML(formatLine(`${activeRate} | ${subtotalWithoutVat.toFixed(2)} EUR`, `${vatAmount.toFixed(2)} EUR`, width))}&#10;</text>`;
+          const rateLabel = receiptVatRate == null ? '—' : `${receiptVatRate}%`;
+          xml += `<text align="left">${escapeXML(formatLine(`${rateLabel} | ${subtotalWithoutVat.toFixed(2)} EUR`, `${vatAmount.toFixed(2)} EUR`, width))}&#10;</text>`;
           xml += `<text align="center">${separator}&#10;</text>`;
         }
         break;
@@ -364,7 +366,7 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
 
       case 'payments': {
         if (!isKitchen && config.payments?.show_payment_method) {
-          const payMethod = raw.payment_label || order.payment_method || t('cash');
+          const payMethod = getLocalizedReceiptPayment(raw.payment_label || order.payment_method, lang);
           xml += `<text align="left">${escapeXML(formatLine(t('payment') + ':', payMethod, width))}&#10;</text>`;
         }
         if (!isKitchen && config.payments?.show_change_due && raw.change_due !== undefined) {
@@ -394,13 +396,13 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
     }
   }
   // Payment Label/Method if present
-  if (order.raw_payload?.payment_splits) {
+  if (includeLegacyPaymentSections && order.raw_payload?.payment_splits) {
     xml += `<text align="left">طريقة الدفع / Payment: دفع مجزأ / Split Payment&#10;</text>`;
     xml += `<text align="left">${escapeXML(formatLine('  نقداً / Cash:', `${parseFloat(order.raw_payload.payment_splits.cash_amount || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
     xml += `<text align="left">${escapeXML(formatLine('  بطاقة / Card:', `${parseFloat(order.raw_payload.payment_splits.card_amount || 0).toFixed(2)} EUR`, width))}&#10;</text>`;
     xml += `<text align="left">${escapeXML(formatLine('  إجمالي المدفوع / Total Paid:', `${subtotal.toFixed(2)} EUR`, width))}&#10;</text>`;
     xml += `<text align="left">${separator}&#10;</text>`;
-  } else if (order.raw_payload?.payment_label) {
+  } else if (includeLegacyPaymentSections && order.raw_payload?.payment_label) {
     const escapedPaymentLabel = escapeXML(order.raw_payload.payment_label);
     xml += `<text align="left">طريقة الدفع / Payment: ${escapedPaymentLabel}&#10;</text>`;
     xml += `<text align="left">${separator}&#10;</text>`;
@@ -443,8 +445,9 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
       const raw = order.raw_payload || {};
       const items = raw.cart_items || [];
       const subtotal = Number(order.total_amount || 0);
-      const vatAmount = Number(order.vat_amount ?? (subtotal * (0.12 / 1.12)));
-      const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? (subtotal - vatAmount));
+      const subtotalWithoutVat = Number(order.subtotal_excl_vat ?? subtotal);
+      const vatAmount = Number(order.vat_amount ?? Math.max(0, subtotal - subtotalWithoutVat));
+      const receiptVatRate = raw.vat_rate ?? raw.vatRate ?? order.vat_rate ?? order.vatRate ?? raw.cart_items?.find((item) => item.vat_rate != null || item.vatRate != null)?.vat_rate ?? null;
 
       let bodyHtml = '';
       const sectionsOrder = config.sections_order || ['header', 'meta', 'items', 'subtotals', 'tax_breakdown', 'payments', 'footer'];
@@ -508,8 +511,8 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
             }
             if (config.meta?.show_timestamp) {
               const dateStr = raw.timestamp
-                ? new Date(raw.timestamp).toLocaleString(isRtl ? 'ar-BE' : 'en-BE')
-                : new Date().toLocaleString('en-BE');
+                ? new Date(raw.timestamp).toLocaleString(lang === 'ar' ? 'ar-BE' : lang === 'fr' ? 'fr-BE' : lang === 'nl' ? 'nl-BE' : 'en-BE')
+                : new Date().toLocaleString(lang === 'ar' ? 'ar-BE' : lang === 'fr' ? 'fr-BE' : lang === 'nl' ? 'nl-BE' : 'en-BE');
               bodyHtml += `<div>${t('date')}: ${dateStr}</div>`;
             }
             if (!isKitchen && config.meta?.show_order_type) {
@@ -541,7 +544,7 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
               const itemTotal = parseFloat(item.price * item.quantity).toFixed(2);
               bodyHtml += `
                 <div class="item-row" style="${isKitchen ? 'font-size: 15px; font-weight: bold; margin-bottom: 2px;' : ''}">
-                  <span class="item-name">${item.quantity}x ${item.name}</span>
+                  <span class="item-name">${item.quantity}x ${getLocalizedReceiptText(item, lang)}</span>
                   ${showPrices ? `<span class="item-price">${itemTotal} EUR</span>` : ''}
                 </div>
               `;
@@ -551,7 +554,7 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
                   const modAdjustment = parseFloat(mod.price_adjustment * item.quantity).toFixed(2);
                   bodyHtml += `
                     <div class="modifier-row" style="${isKitchen ? 'font-size: 12px; font-weight: bold; color: #000;' : ''}">
-                      <span>  + ${mod.name}</span>
+                      <span>  + ${getLocalizedReceiptText(mod, lang)}</span>
                       ${showPrices && mod.price_adjustment ? `<span>+${modAdjustment} EUR</span>` : ''}
                     </div>
                   `;
@@ -586,11 +589,11 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
 
           case 'tax_breakdown': {
             if (!isKitchen && config.tax_breakdown?.show_detailed_rates) {
-              const activeRate = raw.order_type === 'dine_in' ? '12%' : '6%';
+              const rateLabel = receiptVatRate == null ? '—' : `${receiptVatRate}%`;
               bodyHtml += `
                 <div style="font-weight: bold; margin-bottom: 3px;">${t('vat_breakdown')}</div>
                 <div class="item-row" style="font-size: 11px;">
-                  <span>${activeRate} | ${subtotalWithoutVat.toFixed(2)} EUR</span>
+                  <span>${rateLabel} | ${subtotalWithoutVat.toFixed(2)} EUR</span>
                   <span>${vatAmount.toFixed(2)} EUR</span>
                 </div>
                 <div class="divider"></div>
@@ -601,7 +604,7 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
 
           case 'payments': {
             if (!isKitchen && config.payments?.show_payment_method) {
-              const payMethod = raw.payment_label || order.payment_method || t('cash');
+              const payMethod = getLocalizedReceiptPayment(raw.payment_label || order.payment_method, lang);
               bodyHtml += `
                 <div class="item-row">
                   <span>${t('payment')}:</span>
@@ -642,6 +645,15 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
       });
 
       const fullHtml = `
+<!DOCTYPE html>
+<html lang="${lang}">
+<head><meta charset="UTF-8"><title>Receipt Print</title></head>
+<body style="direction: ${isRtl ? 'rtl' : 'ltr'}; text-align: ${isRtl ? 'right' : 'left'};">
+  ${bodyHtml}
+</body>
+</html>`;
+
+      const legacyFullHtml = `
 <!DOCTYPE html>
 <html lang="${lang}">
 <head>
@@ -747,7 +759,7 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
     <span>${subtotalWithoutVat.toFixed(2)} EUR</span>
   </div>
   <div class="item-row">
-    <span>ضريبة القيمة المضافة / VAT (12%):</span>
+    <span>${t('vat')}:</span>
     <span>${vatAmount.toFixed(2)} EUR</span>
   </div>
   <div class="total-row">
@@ -768,6 +780,7 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
 `;
 
       const doc = iframe.contentWindow.document;
+      void legacyFullHtml;
       doc.open();
       doc.write(fullHtml);
       doc.close();

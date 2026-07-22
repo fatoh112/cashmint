@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Printer, RefreshCw } from 'lucide-react';
 import { printReceipt } from '../../utils/printerService';
-import { mergeAndEnforceReceiptConfig, getReceiptTranslation, normalizeReceiptLanguage } from '../../utils/receiptSchema';
+import { mergeAndEnforceReceiptConfig, getReceiptTranslation, normalizeReceiptLanguage, getLocalizedReceiptText, getLocalizedReceiptPayment } from '../../utils/receiptSchema';
 
 export default function ReceiptPreview({ config: inputConfig, store, isArabic, templateType = 'pos_receipt' }) {
   const [printing, setPrinting] = useState(false);
@@ -12,6 +12,7 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
   const lang = normalizeReceiptLanguage(config.language_mode);
   const t = (key) => getReceiptTranslation(key, lang);
   const isRtl = lang === 'ar';
+  const localizedName = (entity) => getLocalizedReceiptText(entity, lang);
 
   const storeLogo = config.header?.logo_url || store?.logo_url;
   const storeName = config.header?.custom_store_name || store?.name || 'Cashmint Store';
@@ -24,31 +25,34 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
   const dummyOrder = {
     id: 'a1b2c3d4-5678-90ef-1234-567890abcdef',
     receipt_number: 'REC-2026-0842',
-    total_amount: 18.50,
-    vat_amount: 1.98,
-    subtotal_excl_vat: 16.52,
-    payment_method: 'Card / Stripe',
+    total_amount: 7.50,
+    vat_amount: 0.42,
+    subtotal_excl_vat: 7.08,
+    payment_method: 'card',
     raw_payload: {
       timestamp: new Date().toISOString(),
       order_type: 'takeaway',
+      vat_rate: 6,
       cashier_name: 'Alex M.',
       table_number: 'Table 4',
       customer_name: 'Jean Dupont',
       coupon_code: 'WELCOME10',
-      payment_label: 'Card / Bancontact',
+      payment_label: 'card',
       change_due: 0.00,
       cart_items: [
         {
-          name: isArabic ? 'برجر كلاسيك' : 'Classic Cheese Burger',
-          price: 12.50,
+          name: 'Hot Chocolate',
+          name_ar: 'شوكولاتة ساخنة',
+          translations: { en: 'Hot Chocolate', fr: 'Chocolat chaud', nl: 'Warme chocolademelk', ar: 'شوكولاتة ساخنة' },
+          price: 4.80,
           quantity: 1,
-          modifiers: [
-            { name: isArabic ? 'جبنة إضافية' : 'Extra Cheddar Cheese', price_adjustment: 1.50 }
-          ]
+          modifiers: [{ name: 'Cinnamon', translations: { en: 'Cinnamon', fr: 'Cannelle', nl: 'Kaneel', ar: 'قرفة' }, price_adjustment: 0.50 }]
         },
         {
-          name: isArabic ? 'بطاطس مقلية كبيرة' : 'Large French Fries',
-          price: 4.50,
+          name: 'Iced Chocolate',
+          name_ar: 'شوكولاتة مثلجة',
+          translations: { en: 'Iced Chocolate', fr: 'Chocolat glacé', nl: 'IJskoude chocolademelk', ar: 'شوكولاتة مثلجة' },
+          price: 2.70,
           quantity: 1,
           modifiers: []
         }
@@ -175,7 +179,7 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
                         <div>{t('order_num')}: {dummyOrder.id.substring(0, 8)}</div>
                       )}
                       {config.meta?.show_timestamp && (
-                        <div>{t('date')}: {new Date().toLocaleString(isRtl ? 'ar-BE' : 'en-BE')}</div>
+                        <div>{t('date')}: {new Date().toLocaleString(lang === 'ar' ? 'ar-BE' : lang === 'fr' ? 'fr-BE' : lang === 'nl' ? 'nl-BE' : 'en-BE')}</div>
                       )}
                       {!isKitchen && config.meta?.show_order_type && (
                         <div>{t('type')}: {t('takeaway')}</div>
@@ -204,12 +208,12 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
                       {dummyOrder.raw_payload.cart_items.map((item, idx) => (
                         <div key={idx} className="space-y-0.5">
                           <div className="flex justify-between">
-                            <span className={`font-semibold ${isKitchen ? 'text-xs font-extrabold' : ''}`}>{item.quantity}x {item.name}</span>
+                            <span className={`font-semibold ${isKitchen ? 'text-xs font-extrabold' : ''}`}>{item.quantity}x {localizedName(item)}</span>
                             {showPrices && <span>{(item.price * item.quantity).toFixed(2)} €</span>}
                           </div>
                           {config.items?.show_modifiers && item.modifiers?.map((mod, mIdx) => (
                             <div key={mIdx} className="flex justify-between text-[10px] text-slate-600 dark:text-slate-300 pl-2 font-bold">
-                              <span>+ {mod.name}</span>
+                              <span>+ {localizedName(mod)}</span>
                               {showPrices && mod.price_adjustment && <span>+{mod.price_adjustment.toFixed(2)} €</span>}
                             </div>
                           ))}
@@ -247,7 +251,7 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
                         <span>{t('vat_tax')}</span>
                       </div>
                       <div className="flex justify-between">
-                        <span>6% | {dummyOrder.subtotal_excl_vat.toFixed(2)} €</span>
+                        <span>{dummyOrder.raw_payload.vat_rate}% | {dummyOrder.subtotal_excl_vat.toFixed(2)} €</span>
                         <span>{dummyOrder.vat_amount.toFixed(2)} €</span>
                       </div>
                       <div className="text-center text-slate-400 font-bold overflow-hidden whitespace-nowrap mt-1">{separator}</div>
@@ -260,7 +264,7 @@ export default function ReceiptPreview({ config: inputConfig, store, isArabic, t
                       {config.payments?.show_payment_method && (
                         <div className="flex justify-between">
                           <span>{t('payment')}:</span>
-                          <span className="font-semibold">{dummyOrder.raw_payload.payment_label}</span>
+                          <span className="font-semibold">{getLocalizedReceiptPayment(dummyOrder.raw_payload.payment_label, lang)}</span>
                         </div>
                       )}
                       {config.payments?.show_change_due && (

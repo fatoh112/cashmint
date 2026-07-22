@@ -293,12 +293,71 @@ export const RECEIPT_TRANSLATIONS = {
   }
 };
 
+// Keep receipt labels as real Unicode text (the legacy entries above were
+// stored with mojibake and could leak mixed-language output to printers).
+Object.assign(RECEIPT_TRANSLATIONS.ar, {
+  receipt_title: 'فاتورة مبيعات', order_num: 'رقم الطلب', receipt_num: 'رقم الفاتورة', date: 'التاريخ',
+  cashier: 'الكاشير', type: 'نوع الطلب', dine_in: 'محلي', takeaway: 'سفري', delivery: 'توصيل',
+  table: 'الطاولة', customer: 'العميل', item: 'الصنف', qty: 'الكمية', price: 'السعر',
+  subtotal: 'المجموع (بدون الضريبة)', vat: 'ضريبة القيمة المضافة', vat_breakdown: 'تفاصيل الضريبة',
+  vat_rate: 'النسبة', vat_net: 'الصافي', vat_tax: 'الضريبة', total: 'المجموع الكلي',
+  payment: 'طريقة الدفع', cash: 'نقدًا', card: 'بطاقة', paid: 'المبلغ المدفوع', change: 'الباقي',
+  discount: 'خصم', thank_you: 'شكرًا لزيارتكم!', kitchen_ticket: '=== تذكرة المطبخ ==='
+});
+Object.assign(RECEIPT_TRANSLATIONS.fr, {
+  order_num: 'Commande n°', receipt_num: 'Ticket n°', qty: 'Qté', takeaway: 'À EMPORTER',
+  subtotal: 'Sous-total HT', vat_breakdown: 'Détail TVA', vat_net: 'Base HT',
+  vat_tax: 'Montant TVA', cash: 'Espèces', thank_you: 'Merci de votre visite !'
+});
+
 /**
  * Get translation for a receipt label key and language code.
  */
 export function getReceiptTranslation(key, lang = 'en') {
   const selectedLang = RECEIPT_TRANSLATIONS[lang] ? lang : 'en';
   return RECEIPT_TRANSLATIONS[selectedLang]?.[key] || RECEIPT_TRANSLATIONS['en']?.[key] || key;
+}
+
+const containsArabic = (value) => /[\u0600-\u06FF]/.test(String(value || ''));
+const containsLatin = (value) => /[A-Za-zÀ-ÿ]/.test(String(value || ''));
+
+/**
+ * Resolve a catalog entity name for the selected receipt language.
+ * Existing name_ar/name fields are supported, as are future name_* and
+ * translations/localized_name objects returned by the catalog payload.
+ */
+export function getLocalizedReceiptText(entity = {}, language = 'en', options = {}) {
+  const lang = normalizeReceiptLanguage(language);
+  const translations = entity.translations || entity.localized_name || entity.localized_names || {};
+  const valueFor = (code) => entity[`name_${code}`] || translations[code] || translations[`${code}-BE`];
+  const base = entity.name || entity.product_name || entity.label || '';
+  const sku = entity.sku || entity.SKU || '';
+  const missing = {
+    ar: 'منتج بدون اسم',
+    en: 'Unnamed item',
+    fr: 'Article sans nom',
+    nl: 'Naamloos artikel'
+  }[lang];
+
+  if (lang === 'ar') {
+    return valueFor('ar') || (containsArabic(base) ? base : '') || sku || missing;
+  }
+
+  return valueFor(lang)
+    || (lang !== 'en' ? valueFor('en') : '')
+    || (containsLatin(base) ? base : '')
+    || sku
+    || options.fallback
+    || missing;
+}
+
+export function getLocalizedReceiptPayment(value, language = 'en') {
+  const text = String(value || '').toLowerCase();
+  if (text.includes('cash') || text.includes('نقد')) return getReceiptTranslation('cash', language);
+  if (text.includes('card') || text.includes('bancontact') || text.includes('stripe') || text.includes('بطاق')) {
+    return getReceiptTranslation('card', language);
+  }
+  return value || getReceiptTranslation('cash', language);
 }
 
 /**

@@ -90,7 +90,7 @@ class BridgeApi(
         }
         val now = URLEncoder.encode(formatter.format(Date()), "UTF-8")
         val request = Request.Builder().url("$baseUrl/rest/v1/payment_requests?select=id,status,stripe_payment_intent_id,expires_at&location_id=eq.$locationId&status=in.(pending,claimed,creating_payment_intent,waiting_for_card,processing,cancel_requested,unknown)&expires_at=gt.$now&order=created_at.asc&limit=1").header("apikey", anonKey).header("Authorization", "Bearer ${accessToken()}").get().build()
-        http.newCall(request).enqueue(object: Callback { override fun onFailure(call: Call,e:IOException)=done(Result.failure(e)); override fun onResponse(call:Call,response:Response){response.use { r -> try { val a=org.json.JSONArray(r.body!!.string()); done(Result.success((0 until a.length()).map{a.getJSONObject(it)})) } catch(e:Exception){done(Result.failure(e))} } } })
+        http.newCall(request).enqueue(object: Callback { override fun onFailure(call: Call,e:IOException)=done(Result.failure(e)); override fun onResponse(call:Call,response:Response){response.use { r -> try { val raw = r.body?.string().orEmpty(); if (!r.isSuccessful) { done(Result.failure(IOException(safeError(raw, r.code)))); return } val a=org.json.JSONArray(raw); done(Result.success((0 until a.length()).map{a.getJSONObject(it)})) } catch(e:Exception){done(Result.failure(e))} } } })
     }
     fun realtimeSocket(): WebSocket {
         val realtimeUrl = baseUrl.replace("https://", "wss://").replace("http://", "ws://")

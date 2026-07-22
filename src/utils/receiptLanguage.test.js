@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildReceiptXML } from './printerService';
-import { mergeAndEnforceReceiptConfig, normalizeReceiptLanguage } from './receiptSchema';
+import { getLocalizedReceiptText, mergeAndEnforceReceiptConfig, normalizeReceiptLanguage } from './receiptSchema';
 
 describe('receipt language isolation', () => {
   it('normalizes legacy pos_language to English', () => {
@@ -24,6 +24,24 @@ describe('receipt language isolation', () => {
       isArabic: true
     });
     expect(xml).toContain('Sous-total HT');
-    expect(xml).not.toContain('Ø§Ù„Ù…Ø¬Ù…ÙˆØ¹');
+  });
+});
+
+describe('receipt catalog localization', () => {
+  const arabicChocolate = '\u0634\u0648\u0643\u0648\u0644\u0627\u062a\u0629 \u0633\u0627\u062e\u0646\u0629';
+  const arabicCinnamon = '\u0642\u0631\u0641\u0629';
+
+  it('localizes catalog items and modifiers using the selected receipt language', () => {
+    const item = { name: 'Hot Chocolate', name_ar: arabicChocolate, translations: { fr: 'Chocolat chaud', nl: 'Warme chocolademelk' } };
+    const modifier = { name: 'Cinnamon', translations: { ar: arabicCinnamon, fr: 'Cannelle', nl: 'Kaneel' } };
+    expect(getLocalizedReceiptText(item, 'en')).toBe('Hot Chocolate');
+    expect(getLocalizedReceiptText(item, 'ar')).toBe(arabicChocolate);
+    expect(getLocalizedReceiptText(item, 'fr')).toBe('Chocolat chaud');
+    expect(getLocalizedReceiptText(item, 'nl')).toBe('Warme chocolademelk');
+    expect(getLocalizedReceiptText(modifier, 'ar')).toBe(arabicCinnamon);
+  });
+
+  it('never uses an Arabic base name for English when an identifier exists', () => {
+    expect(getLocalizedReceiptText({ name: arabicChocolate, sku: 'CAF-01' }, 'en')).toBe('CAF-01');
   });
 });
