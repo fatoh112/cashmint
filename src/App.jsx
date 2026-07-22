@@ -2255,31 +2255,22 @@ export default function App() {
     const sessionId = activeCashierSession?.id || localStorage.getItem('cashier_session_id');
     try {
       if (sessionId) {
-        // Fetch current session metadata first
-        const { data: currentSess } = await supabase
-          .from('cashier_sessions')
-          .select('*')
-          .eq('id', sessionId)
-          .maybeSingle();
+        const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id');
+        const deviceToken = localStorage.getItem('device_token');
+        const closingCash = Number(actualCashInput || 0);
 
-        const currentMetadata = currentSess?.metadata || {};
-        const systemBalance = currentSess?.cash_balance || 0;
-        const updatedMetadata = {
-          ...currentMetadata,
-          closing_cash: systemBalance
-        };
-
-        // Update database
-        const { error } = await supabase
-          .from('cashier_sessions')
-          .update({
-            status: 'closed',
-            closed_at: new Date().toISOString(),
-            metadata: updatedMetadata
-          })
-          .eq('id', sessionId);
+        const { data: result, error } = await supabase.rpc('close_cashier_shift', {
+          p_session_id: sessionId,
+          p_device_id: deviceId,
+          p_device_token: deviceToken || null,
+          p_closing_cash_counted: Number.isFinite(closingCash) ? closingCash : 0,
+          p_notes: null
+        });
 
         if (error) throw error;
+        if (!result?.success) {
+          throw new Error(result?.error || 'Unable to close cashier shift');
+        }
       }
 
       showNotification(isArabic ? "تم تسليم الوردية بنجاح!" : "Shift ended and session closed successfully!", "success");
