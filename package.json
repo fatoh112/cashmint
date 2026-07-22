@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "build:pos": "vite build --mode pos --outDir dist-pos",
-    "build:master": "vite build --mode master --outDir dist-master",
-    "build:store": "vite build --mode store --outDir dist-store",
+    "build": "npm run build:all",
+    "build:all": "node scripts/generate-mode-icons.mjs && npm run build:master && npm run build:pos && npm run build:store",
+    "build:master": "node scripts/generate-mode-icons.mjs && vite build --mode master",
+    "build:pos": "node scripts/generate-mode-icons.mjs && vite build --mode pos",
+    "build:store": "node scripts/generate-mode-icons.mjs && vite build --mode store",
     "lint": "oxlint src",
     "test": "vitest run",
     "preview": "vite preview"
