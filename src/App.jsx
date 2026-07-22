@@ -296,6 +296,8 @@ export default function App() {
   const [loadingSession, setLoadingSession] = useState(true);
   const [isCheckingStore, setIsCheckingStore] = useState(true);
   const [showMasterLogin, setShowMasterLogin] = useState(false);
+  const [store, setStore] = useState(null);
+  const [userRole, setUserRole] = useState('cashier'); // 'cashier' or 'admin'
 
   // Static Device Authentication states
   const [deviceAuth, setDeviceAuth] = useState(null); // { deviceId, storeId }
@@ -368,7 +370,6 @@ export default function App() {
   const [products, setProducts] = useState([]);
   const [modifiers, setModifiers] = useState([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState(null);
-  const [store, setStore] = useState(null);
   const headerLogoInputRef = useRef(null);
   const handleHeaderLogoChange = async (e) => {
     const file = e.target.files?.[0];
@@ -524,7 +525,6 @@ export default function App() {
   };
   const [hubriseLocationId, setHubriseLocationId] = useState('');
   const [view, setView] = useState('pos'); // 'pos' or 'admin'
-  const [userRole, setUserRole] = useState('cashier'); // 'cashier' or 'admin'
 
   const t = (key) => {
     if (!key) return '';
