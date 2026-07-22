@@ -62,9 +62,9 @@ describe('WisePOS E server-driven regression guards', () => {
 
   it('does not pay on Reader action success without PaymentIntent success', () => {
     const actionSuccess = webhookSource.indexOf("type === 'terminal.reader.action_succeeded'");
-    const actionReturn = webhookSource.indexOf('return json({received:true})', actionSuccess);
+    const actionReturn = webhookSource.indexOf('return json({ received: true })', actionSuccess);
     expect(actionSuccess).toBeGreaterThan(-1);
-    expect(webhookSource.slice(actionSuccess, actionReturn)).toContain("status:'unknown'");
+    expect(webhookSource.slice(actionSuccess, actionReturn)).toContain("status: 'unknown'");
     expect(webhookSource.slice(actionSuccess, actionReturn)).not.toContain('complete_terminal_payment');
   });
 
@@ -77,7 +77,7 @@ describe('WisePOS E server-driven regression guards', () => {
 
   it('marks webhook events processed only after completion', () => {
     const completion = webhookSource.indexOf("db.rpc('complete_terminal_payment'");
-    const processed = webhookSource.indexOf("mark_stripe_terminal_webhook_processed", completion);
+    const processed = webhookSource.indexOf('await markProcessed(db, eventId)', completion);
     expect(completion).toBeGreaterThan(-1);
     expect(processed).toBeGreaterThan(completion);
   });
@@ -97,6 +97,92 @@ describe('WisePOS E server-driven regression guards', () => {
   it('keeps webhook JWT disabled while payment functions require JWT', () => {
     expect(webhookSource).toContain('validStripeSignature');
     expect(webhookSource).not.toContain('authenticatedUser');
+  });
+
+  it('does not fail a temporary requires_payment_method while the Reader action is active', () => {
+    expect(retrieveSource).toContain("readerActionStatus === 'in_progress'");
+    expect(retrieveSource).toContain('const status = processingStatus(request.status)');
+    expect(retrieveSource).toContain("reader_action_status: 'in_progress'");
+  });
+
+  it('requires a confirmed Stripe or Reader failure before marking a decline', () => {
+    expect(retrieveSource).toContain("const confirmedFailure = readerActionStatus === 'failed' || Boolean(intent.last_payment_error)");
+    expect(retrieveSource).not.toContain("intent.status === 'requires_payment_method' && !['failed','succeeded'].includes(request.status)");
+  });
+
+  it('handles terminal.reader.action_failed as a real failed state', () => {
+    expect(webhookSource).toContain("type === 'terminal.reader.action_failed'");
+    expect(webhookSource).toContain("status: 'failed'");
+    expect(webhookSource).toContain('readAndSyncReader(db, request, request.restaurant_payment_configs, false)');
+  });
+
+  it('completes succeeded PaymentIntents even when the request was previously failed', () => {
+    expect(retrieveSource).toContain("if (intent.status === 'succeeded')");
+    expect(retrieveSource).toContain("db.rpc('complete_terminal_payment'");
+    expect(webhookSource).toContain("verified.status === 'succeeded'");
+    expect(webhookSource).toContain("db.rpc('complete_terminal_payment'");
+  });
+
+  it('uses only valid webhook relationships and checks lookup errors', () => {
+    expect(webhookSource).toContain("const paymentRequestSelect = '*, restaurant_payment_configs(provider_config)'");
+    expect(webhookSource).not.toContain('stripe_terminal_readers(stripe_reader_id)');
+    expect(webhookSource).toContain('if (error) throw error');
+    expect(webhookSource).toContain(".eq('stripe_reader_id', request.stripe_reader_id)");
+  });
+
+  it('keeps failed webhook events retryable instead of processing them', () => {
+    expect(webhookSource).toContain("mark_stripe_terminal_webhook_failed");
+    expect(webhookSource).toContain("return new Response('Webhook handling failed', { status: 500 })");
+    expect(webhookSource).toContain('async function markProcessed');
+  });
+
+  it('validates PaymentIntent metadata fallback against stored payment, order, store, and provider data', () => {
+    expect(webhookSource).toContain('findValidatedMetadataFallback');
+    expect(webhookSource).toContain("request.provider_type !== 'stripe_server_driven'");
+    expect(webhookSource).toContain('request.stripe_payment_intent_id !== paymentIntentId');
+    expect(webhookSource).toContain('request.order_id !== metadata.order_id');
+    expect(webhookSource).toContain('order.store_id !== metadata.store_id');
+  });
+
+  it('clears the Reader action after trusted successful completion', () => {
+    expect(completionMigration).toContain('action_status = \'idle\', action_type = NULL');
+    expect(webhookSource).toContain("await markProcessed(db, eventId)");
+  });
+
+  it('keeps duplicate succeeded events idempotent', () => {
+    expect(completionMigration).toContain('v_existing_payment');
+    expect(completionMigration).toContain('provider_reference = p_provider_reference');
+    expect(webhookSource).toContain('if (!claimed) return json({ received: true, duplicate: true })');
+  });
+
+  it('uses complete_terminal_payment for both polling and webhook reconciliation', () => {
+    expect(retrieveSource).toContain("db.rpc('complete_terminal_payment'");
+    expect(webhookSource).toContain("db.rpc('complete_terminal_payment'");
+  });
+
+  it('keeps the Android Bridge path unchanged', () => {
+    expect(retrieveSource).toContain('paymentRequestForBridge(req, payment_request_id)');
+    expect(sharedSource).toContain('claimed_by_device_id');
+    expect(appSource).toContain("providerType === 'stripe_server_driven'");
+  });
+
+  it('keeps one card checkout attempt and one order creation path', () => {
+    expect(appSource).toContain('if (checkoutInFlightRef.current) return;');
+    expect(appSource).toContain("supabase.rpc('create_accounting_order'");
+    expect(appSource).toContain("supabase.rpc('request_terminal_card_payment'");
+  });
+
+  it('deduplicates receipt jobs by order ID so trusted completion prints once', () => {
+    expect(appSource).toContain('autoPrintJobsRef.current.get(orderKey)');
+    expect(appSource).toContain('recordOrderReceiptPrinted(order.id)');
+    expect(appSource).toContain('enqueueAutoReceiptPrint({ ...receiptOrder, status: \'completed\' })');
+  });
+
+  it('stores Stripe action IDs separately from the Stripe Reader ID', () => {
+    expect(startSource).toContain('const actionId = action.action?.id');
+    expect(startSource).not.toContain('reader_action_id: action.id');
+    expect(retrySource).toContain('const actionId = action.action?.id');
+    expect(retrySource).not.toContain('reader_action_id:action.id');
   });
 
   it('persists platform readers with a normalized null account scope', () => {
