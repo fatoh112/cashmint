@@ -44,6 +44,7 @@ const SuperAdminDashboard = isMasterHost
 const LandingPage = isMasterHost
   ? React.lazy(() => import('./landing/LandingPage'))
   : () => null;
+import CashmintLogo from './components/branding/CashmintLogo';
 import {
   Utensils,
   Leaf,
@@ -342,6 +343,26 @@ export default function App() {
       localStorage.setItem('theme', 'light');
     }
   }, [theme]);
+
+  // Set mode-specific browser tab title
+  useEffect(() => {
+    if (isMasterHost) {
+      document.title = 'Cashmint | الإدارة المركزية';
+    } else if (isStoreMode) {
+      if (store?.name) {
+        document.title = `${store.name} | Cashmint إدارة المطعم`;
+      } else {
+        document.title = 'Cashmint | إدارة المطعم';
+      }
+    } else if (isPosMode) {
+      const storeName = store?.name || localStorage.getItem('current_store_name');
+      if (storeName) {
+        document.title = `${storeName} | Cashmint نقاط البيع`;
+      } else {
+        document.title = 'Cashmint | نقاط البيع';
+      }
+    }
+  }, [store?.name]);
 
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
@@ -4321,8 +4342,9 @@ function BackOfficeLogin({ onBackToLanding }) {
         )}
 
         {/* Branding header */}
-        <div className="text-center space-y-4">
-          <div className={`inline-flex items-center justify-center px-6 py-2.5 rounded-2xl font-black tracking-wider text-xs shadow-lg uppercase border ${isMasterHost
+        <div className="text-center space-y-4 flex flex-col items-center">
+          <CashmintLogo size="md" badgeBg={true} />
+          <div className={`inline-flex items-center justify-center px-6 py-2 rounded-2xl font-black tracking-wider text-xs shadow-lg uppercase border ${isMasterHost
             ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-cyan-500/15 border-cyan-500/20'
             : 'bg-amber-500 text-white shadow-amber-500/20 border-amber-400/20'
             }`}>

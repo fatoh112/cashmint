@@ -1,5 +1,6 @@
 import React from 'react';
-import { LogIn, UtensilsCrossed } from 'lucide-react';
+import { LogIn } from 'lucide-react';
+import CashmintLogo from '../../components/branding/CashmintLogo';
 
 export default function LandingHeader({ onLoginClick }) {
   return (
@@ -8,25 +9,10 @@ export default function LandingHeader({ onLoginClick }) {
         
         {/* Right side (RTL): Logo & Brand Name */}
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-500 via-orange-500 to-amber-400 p-0.5 shadow-lg shadow-amber-500/20 flex items-center justify-center flex-shrink-0">
-            <div className="w-full h-full bg-slate-900 rounded-[14px] flex items-center justify-center text-amber-400">
-              <UtensilsCrossed className="w-6 h-6" />
-            </div>
-          </div>
-
-          <div className="flex flex-col">
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-black tracking-tight text-slate-900 dark:text-white">
-                Cashmint
-              </span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                POS
-              </span>
-            </div>
-            <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
-              نظام إدارة المطاعم
-            </span>
-          </div>
+          <CashmintLogo size="sm" badgeBg={true} />
+          <span className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline border-r border-slate-200 dark:border-slate-800 pr-3 mr-1">
+            نظام إدارة المطاعم
+          </span>
         </div>
 
         {/* Left side (RTL): Login Button */}

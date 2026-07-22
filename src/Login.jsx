@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { AlertCircle } from 'lucide-react';
+import CashmintLogo from './components/branding/CashmintLogo';
 
 export default function Login({ isArabic: propIsArabic, setIsArabic: propSetIsArabic, onLoginSuccess }) {
   const [activationCode, setActivationCode] = useState('');
@@ -140,9 +141,7 @@ export default function Login({ isArabic: propIsArabic, setIsArabic: propSetIsAr
               </div>
             )
           ) : (
-            <div className="inline-flex items-center justify-center px-6 py-2.5 rounded-2xl font-black tracking-wider text-xs shadow-lg uppercase border bg-amber-500 text-white shadow-amber-500/20 border-amber-400/20">
-              Cashmint POS
-            </div>
+            <CashmintLogo size="md" badgeBg={true} />
           )}
 
           <div className="flex flex-col items-center gap-2 mt-2">

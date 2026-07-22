@@ -1,5 +1,5 @@
 import React from 'react';
-import { UtensilsCrossed } from 'lucide-react';
+import CashmintLogo from '../../components/branding/CashmintLogo';
 
 export default function LandingFooter({ onLoginClick }) {
   const currentYear = new Date().getFullYear();
@@ -12,15 +12,10 @@ export default function LandingFooter({ onLoginClick }) {
           
           {/* Brand Info */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-500 p-0.5 flex items-center justify-center">
-              <div className="w-full h-full bg-slate-900 rounded-[10px] flex items-center justify-center text-amber-400">
-                <UtensilsCrossed className="w-5 h-5" />
-              </div>
-            </div>
-            <div>
-              <span className="text-lg font-black text-white tracking-tight block">Cashmint</span>
-              <span className="text-xs text-slate-500">نظام نقاط بيع وإدارة مطاعم</span>
-            </div>
+            <CashmintLogo size="sm" badgeBg={true} />
+            <span className="text-xs text-slate-500 border-r border-slate-800 pr-3 mr-1">
+              نظام نقاط بيع وإدارة مطاعم
+            </span>
           </div>
 
           {/* Links */}
