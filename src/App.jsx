@@ -9,6 +9,7 @@ import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
 import PrintingDiagnosticsModal from './components/admin/PrintingDiagnosticsModal';
 import { addDiagnosticLog, setLastPrintAttempt, getLastPrintAttempt } from './utils/diagnosticLogger';
+import CashmintLogo from './components/branding/CashmintLogo';
 
 const currentMode = import.meta.env.VITE_APP_MODE || import.meta.env.MODE;
 
@@ -44,7 +45,6 @@ const SuperAdminDashboard = isMasterHost
 const LandingPage = isMasterHost
   ? React.lazy(() => import('./landing/LandingPage'))
   : () => null;
-import CashmintLogo from './components/branding/CashmintLogo';
 import {
   Utensils,
   Leaf,
