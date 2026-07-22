@@ -63,7 +63,8 @@ function normalizeStoreInfo(storeInput, config = {}) {
 
 /**
  * Converts a store logo URL into 1-bit monochrome raster image XML for Epson TM-T20IV.
- * Epson ePOS XML image syntax: <image width="256" height="128" align="center" color="color_1">HEX_RASTER_DATA</image>
+ * Epson ePOS XML image syntax requires the raster bytes as base64Binary:
+ * <image width="256" height="128" align="center" color="color_1">BASE64_RASTER_DATA</image>
  */
 export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTargetWidth = 256) {
   console.log(`[LOGO-TRACE] normalized-logo-url: ${logoUrl || '(none)'}`);
@@ -156,16 +157,19 @@ export async function convertLogoToEpsonXML(logoUrl, align = 'center', maxTarget
       }
     }
 
-    // Convert raster bytes to Hex string
-    let hexString = '';
-    for (let i = 0; i < rasterBytes.length; i++) {
-      hexString += rasterBytes[i].toString(16).padStart(2, '0');
+    // Epson ePOS XML expects image content as base64Binary, not hexadecimal text.
+    // Build the binary string in chunks to avoid call-stack limits on large logos.
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < rasterBytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...rasterBytes.subarray(i, i + chunkSize));
     }
+    const base64String = btoa(binary);
 
     console.log(`[LOGO-TRACE] raster-byte-count: ${rasterBytes.length}`);
-    console.log(`[LOGO-TRACE] raster-hex-length: ${hexString.length}`);
+    console.log(`[LOGO-TRACE] raster-base64-length: ${base64String.length}`);
 
-    const logoXmlTag = `<image width="${width}" height="${height}" align="${align}" color="color_1">${hexString.toUpperCase()}</image>&#10;`;
+    const logoXmlTag = `<image width="${width}" height="${height}" align="${align}" color="color_1">${base64String}</image>&#10;`;
     console.log(`[LOGO-TRACE] xml-image-tag-present: true`);
     console.log(`[LOGO-TRACE] xml-image-data-length: ${logoXmlTag.length}`);
 

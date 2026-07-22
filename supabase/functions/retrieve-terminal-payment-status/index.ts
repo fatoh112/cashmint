@@ -1,6 +1,9 @@
 import { corsHeaders, json, paymentRequestForBridge, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
 
-const finalRequestStatuses = new Set(['succeeded', 'cancelled', 'expired'])
+// A confirmed decline/cancellation is terminal as well. Without `failed`
+// here, a later status poll could revive a failed request to waiting/processing
+// and block the next checkout for the location.
+const finalRequestStatuses = new Set(['succeeded', 'failed', 'cancelled', 'expired'])
 const processingRequestStatuses = new Set(['waiting_for_card', 'processing'])
 
 function processingStatus(requestStatus: string) {

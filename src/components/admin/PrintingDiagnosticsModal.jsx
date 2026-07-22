@@ -201,6 +201,12 @@ export default function PrintingDiagnosticsModal({ isOpen, onClose, onRetryPrint
       if (!activeLogoUrl) {
         throw new Error('No store logo URL configured on store or receipt template.');
       }
+      if (!showLogoConfig) {
+        throw new Error('Logo printing is disabled in the active receipt template.');
+      }
+      if (!printerIP) {
+        throw new Error('Printer IP address is not configured in settings.');
+      }
 
       // 2. Fetch logo blob & check HTTP status & content type
       let fetchStatus = null;
@@ -271,18 +277,22 @@ export default function PrintingDiagnosticsModal({ isOpen, onClose, onRetryPrint
       const hasImageTag = logoXml.includes('<image');
       const rasterByteCount = Math.floor(targetWidth / 8) * targetHeight;
 
-      let epsonRes = null;
-      if (printerIP && hasImageTag) {
-        const dummyLogoOrder = {
-          id: `logo-test-${Date.now()}`,
-          total_amount: 0,
-          raw_payload: { cart_items: [{ name: '*** LOGO TEST PRINT ***', price: 0, quantity: 1 }] }
-        };
-        epsonRes = await printReceipt(dummyLogoOrder, printerIP, store?.name || 'Cashmint', {
-          templateConfig,
-          outputType: 'pos_receipt',
-          skipFallback: true
-        });
+      if (!hasImageTag) {
+        throw new Error('Logo raster conversion produced no Epson image payload.');
+      }
+
+      const dummyLogoOrder = {
+        id: `logo-test-${Date.now()}`,
+        total_amount: 0,
+        raw_payload: { cart_items: [{ name: '*** LOGO TEST PRINT ***', price: 0, quantity: 1 }] }
+      };
+      const epsonRes = await printReceipt(dummyLogoOrder, printerIP, store || store?.name || 'Cashmint', {
+        templateConfig,
+        outputType: 'pos_receipt',
+        skipFallback: true
+      });
+      if (!epsonRes?.success) {
+        throw new Error(epsonRes?.error || 'Epson rejected the full logo receipt test.');
       }
 
       setLogoTestResult({
@@ -520,6 +530,8 @@ export default function PrintingDiagnosticsModal({ isOpen, onClose, onRetryPrint
               <button
                 onClick={handleTestLogoPipeline}
                 disabled={isTestingLogo}
+                title="Full Receipt + Logo Test"
+                aria-label="Full Receipt + Logo Test"
                 className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
               >
                 {isTestingLogo ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
@@ -540,6 +552,7 @@ export default function PrintingDiagnosticsModal({ isOpen, onClose, onRetryPrint
                   <div><strong className="font-sans">Canvas Dimensions:</strong> {logoTestResult.canvasSize}</div>
                   <div><strong className="font-sans">Raster Payload:</strong> {logoTestResult.rasterByteCount} bytes</div>
                   <div><strong className="font-sans">XML &lt;image&gt; Tag:</strong> {logoTestResult.hasImageTag ? 'YES' : 'NO'}</div>
+                  <div><strong className="font-sans">Epson Full Print:</strong> {logoTestResult.epsonRes?.success ? 'SUCCESS' : 'NOT COMPLETED'}</div>
                 </div>
               )}
             </div>

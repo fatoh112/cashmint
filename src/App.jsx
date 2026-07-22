@@ -1996,6 +1996,10 @@ export default function App() {
       }
     } catch (err) {
       if (isOrderCreated) {
+        if (paymentMethod === 'card' && paymentRequestCreated) {
+          setStripeStatus('failed');
+          setShowStripeModal(true);
+        }
         if (paymentMethod === 'card' && !paymentRequestCreated) {
           try {
             const { error: cleanupError } = await supabase.rpc('cancel_accounting_card_payment', {
@@ -2008,7 +2012,13 @@ export default function App() {
           }
         }
         console.error("POST-CHECKOUT STEP WARNING:", err);
-        showNotification(isArabic ? "تم حفظ الطلب بنجاح، ولكن حدث خطأ في الخطوة التالية ⚠️" : "Order saved successfully, but a post-checkout step had an issue ⚠️", "warning");
+        const postCheckoutMessage = err?.message || err?.details || 'The payment or printing step failed.';
+        showNotification(
+          isArabic
+            ? `تم حفظ الطلب، لكن فشلت الخطوة التالية: ${postCheckoutMessage}`
+            : `Order saved, but the next step failed: ${postCheckoutMessage}`,
+          "warning"
+        );
       } else {
         console.error("DETAILED CHECKOUT ERROR:", err.message, err.details, err.hint, err);
         const errorCode = `${err?.message || ''} ${err?.details || ''}`;
@@ -2044,10 +2054,30 @@ export default function App() {
       showNotification(val.error, 'error');
       return;
     }
+    if (!terminalAvailability.checked || terminalAvailability.providerType !== 'stripe_server_driven') {
+      showNotification(
+        isArabic
+          ? 'الدفع بالتجزئة يحتاج إلى إعداد WisePOS E فعال.'
+          : 'Split payment requires an active WisePOS E terminal.',
+        'error'
+      );
+      return;
+    }
+    if (!terminalAvailability.available) {
+      showNotification(
+        terminalAvailability.activePayment
+          ? (isArabic ? 'يوجد دفع بطاقة نشط بالفعل. ألغِه أولاً.' : 'Another card payment is already active. Cancel it first.')
+          : (isArabic ? 'قارئ WisePOS E غير متاح حاليًا.' : 'The WisePOS E reader is not available right now.'),
+        'error'
+      );
+      return;
+    }
     if (checkoutInFlightRef.current) return;
     checkoutInFlightRef.current = true;
     setIsSubmittingSplit(true);
 
+    let createdOrderId = null;
+    let splitCreated = false;
     try {
       showNotification(isArabic ? "جاري إنشاء وتجهيز الدفع المجزأ..." : "Creating split payment...", "info");
 
@@ -2086,6 +2116,7 @@ export default function App() {
       if (orderErr) throw orderErr;
       const createdOrder = Array.isArray(orderData) ? orderData[0] : orderData;
       if (!createdOrder?.id) throw new Error('The order was not returned by checkout.');
+      createdOrderId = createdOrder.id;
 
       // 2. Call create_split_payment RPC
       const idempotencyKey = `split-${createdOrder.id}-${Date.now()}`;
@@ -2099,6 +2130,8 @@ export default function App() {
       if (splitErr) throw splitErr;
 
       const splitResult = Array.isArray(splitData) ? splitData[0] : splitData;
+      splitCreated = Boolean(splitResult?.split_id && splitResult?.card_payment_request_id);
+      if (!splitCreated) throw new Error('The split payment request was not returned by the server.');
 
       activePaymentOrderRef.current = createdOrder;
       setActivePaymentOrderId(createdOrder.id);
@@ -2111,22 +2144,33 @@ export default function App() {
         status: splitResult.status
       });
 
-      if (terminalAvailability.providerType === 'stripe_server_driven') {
-        setActivePaymentProvider('stripe_server_driven');
-        const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
-          body: { payment_request_id: splitResult.card_payment_request_id, ...terminalDeviceCredentials() }
-        });
-        if (startError) throw startError;
-      } else {
-        setActivePaymentProvider('stripe_android_bridge');
-      }
-
+      const providerType = terminalAvailability.providerType;
+      setActivePaymentProvider(providerType);
       setShowSplitModal(false);
       setShowStripeModal(true);
       setStripeStatus('pending');
 
+      if (providerType === 'stripe_server_driven') {
+        const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
+          body: { payment_request_id: splitResult.card_payment_request_id, ...terminalDeviceCredentials() }
+        });
+        if (startError) throw startError;
+      }
+
     } catch (err) {
       console.error("SPLIT CHECKOUT ERROR:", err);
+      setStripeStatus('failed');
+      setShowStripeModal(true);
+      if (createdOrderId && !splitCreated) {
+        try {
+          await supabase.rpc('cancel_accounting_card_payment', {
+            p_order_id: createdOrderId,
+            p_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+          });
+        } catch (cleanupError) {
+          console.error('SPLIT ORDER CLEANUP ERROR:', cleanupError);
+        }
+      }
       showNotification(err.message || "Split payment creation failed", "error");
     } finally {
       checkoutInFlightRef.current = false;
@@ -3540,11 +3584,17 @@ export default function App() {
 
             <div className="space-y-2">
               <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
-                {stripeStatus === 'succeeded' ? 'Payment Confirmed' : activePaymentProvider === 'stripe_server_driven' ? 'Waiting for customer' : 'Connecting to Card Reader...'}
+                {stripeStatus === 'succeeded'
+                  ? 'Payment Confirmed'
+                  : stripeStatus === 'failed'
+                    ? 'Payment Failed'
+                    : activePaymentProvider === 'stripe_server_driven' ? 'Waiting for customer' : 'Connecting to Card Reader...'}
               </h3>
               <p className="text-xs text-slate-400 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
                 {stripeStatus === 'succeeded'
                   ? 'Closing the payment window now.'
+                  : stripeStatus === 'failed'
+                    ? 'You can retry the card or close this payment.'
                   : activePaymentProvider === 'stripe_server_driven'
                     ? 'Present card on the WisePOS E reader.'
                     : 'Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader.'}
@@ -3558,6 +3608,14 @@ export default function App() {
             {stripeStatus === 'failed' && (
               <button
                 onClick={async () => {
+                  if (stripeStatus === 'failed') {
+                    setShowStripeModal(false);
+                    setActivePaymentOrderId(null);
+                    setActivePaymentRequestId(null);
+                    activePaymentOrderIdRef.current = null;
+                    activePaymentOrderRef.current = null;
+                    return;
+                  }
                   try {
                     if (activeSplit?.split_id) {
                       await handleRetryCardPayment();
@@ -3606,9 +3664,10 @@ export default function App() {
                   }
                   showNotification('Card payment cancellation requested', 'info');
                 }}
-                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-650 text-slate-700 dark:text-slate-250 rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
+                aria-label={stripeStatus === 'failed' ? 'Close failed payment' : 'Cancel payment'}
+                className="w-full py-2.5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-600 dark:hover:bg-slate-500 text-slate-900 dark:text-white rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >
-                Cancel Payment
+                {stripeStatus === 'failed' ? 'Close / Cancel Payment' : 'Cancel Payment'}
               </button>
             </div>
           </div>

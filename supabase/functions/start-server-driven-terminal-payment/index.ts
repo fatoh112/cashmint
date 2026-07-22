@@ -1,4 +1,4 @@
-import { assertCardPaymentsCapability, corsHeaders, json, safeReader, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
+import { assertCardPaymentsCapability, corsHeaders, json, safeReader, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -77,6 +77,21 @@ Deno.serve(async (req) => {
     if (readerUpdateError) throw readerUpdateError
     return json({ payment_request_id: request.id, provider_type: request.provider_type, status: 'waiting_for_card', reader: safeReader({ ...fresh, action: action.action ?? fresh.action }) })
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : 'Unable to start payment' }, 400)
+    const message = error instanceof Error ? error.message : 'Unable to start payment'
+    if (payment_request_id) {
+      try {
+        const db = service()
+        await db.from('payment_requests').update({
+          status: 'failed',
+          failure_code: 'terminal_start_failed',
+          failure_message: message,
+          reader_action_status: 'failed',
+          updated_at: new Date().toISOString(),
+        }).eq('id', payment_request_id).in('status', ['pending', 'failed', 'unknown', 'waiting_for_card'])
+      } catch (recordError) {
+        console.error('Failed to record terminal start failure', recordError)
+      }
+    }
+    return json({ error: message }, 400)
   }
 })
