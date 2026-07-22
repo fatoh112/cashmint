@@ -215,6 +215,14 @@ sequenceDiagram
 6. Manual test print and reprint flows may intentionally open browser print UI depending on the selected print path.
 7. Printing is downstream of payment confirmation: a failed printer does not mark a payment failed, and a successful payment should remain recorded even if receipt printing needs retry.
 
+### 2.14.1 Receipt Language Isolation
+1. Receipt templates are stored in `receipt_templates.config_json`; the persisted receipt-language field is `config_json.language_mode` (`en`, `ar`, `fr`, or `nl`). No separate database column is required.
+2. The current default is `pos_language`. In `src/admin/ReceiptDesigner.jsx:103-105`, `pos_language` resolves through the `isArabic` prop, which is the global application language state rather than an independent receipt-language state.
+3. The same coupling is repeated by `src/components/admin/ReceiptPreview.jsx:13-19` and `src/utils/printerService.js:202-205` / `440-444`; therefore changing the Backoffice language can change receipt preview and printed content whenever `language_mode` is `pos_language`.
+4. The global UI language is persisted as `localStorage.app_language` in `src/App.jsx:462-470`, and is passed through `AdminDashboard` into `ReceiptDesigner` (`src/App.jsx:2770-2782`, `src/admin/AdminDashboard.jsx:478-482`).
+5. Required architecture: Backoffice UI language and receipt language must be independent. Explicit receipt selections (`en`, `ar`, `fr`, `nl`) must be honored by preview, Epson XML, iframe fallback, reprint, and diagnostics regardless of `app_language`.
+6. Minimal corrective change: keep `config_json.language_mode` as the source of truth, stop resolving `pos_language` from `isArabic`, use a concrete receipt-language default, and remove the runtime `isArabic` dependency from receipt-language selection. `isArabic` may remain for Backoffice labels, notifications, and UI direction only.
+
 ### 2.15 Realtime, Polling, and Recovery Loops
 1. Realtime is used for fast UI and bridge updates.
 2. REST polling is always retained as fallback because mobile networks, browser WebSockets, and Supabase Realtime permissions can fail.
