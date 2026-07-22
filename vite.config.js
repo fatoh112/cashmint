@@ -66,6 +66,14 @@ function modePwaPlugin(mode) {
       // Strip existing favicon/apple-touch-icon links from html to avoid duplicates
       transformed = transformed.replace(/<link rel="(icon|apple-touch-icon|manifest)".*?>\n?/gi, '')
 
+      // Update viewport tag for POS mode
+      if (mode === 'pos') {
+        transformed = transformed.replace(
+          /<meta name="viewport" content=".*?" \/>/gi,
+          '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />'
+        )
+      }
+
       // Inject mode-specific PWA links into <head>
       const pwaTags = `
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -96,6 +104,15 @@ function modePwaPlugin(mode) {
           )
         }
         console.log(`✓ Copied ${mode} PWA icon assets & manifest into ${config.outDir}`)
+      }
+
+      // Ensure sw.js is only present in dist-pos
+      if (mode !== 'pos') {
+        const swPath = path.join(targetOutDir, 'sw.js')
+        if (fs.existsSync(swPath)) {
+          fs.unlinkSync(swPath)
+          console.log(`✓ Removed sw.js from non-POS build: ${config.outDir}`)
+        }
       }
     }
   }

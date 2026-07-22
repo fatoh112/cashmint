@@ -10,6 +10,8 @@ import StoreThemeProvider from './providers/StoreThemeProvider';
 import PrintingDiagnosticsModal from './components/admin/PrintingDiagnosticsModal';
 import { addDiagnosticLog, setLastPrintAttempt, getLastPrintAttempt } from './utils/diagnosticLogger';
 import CashmintLogo from './components/branding/CashmintLogo';
+import IpadInstallGuide from './components/IpadInstallGuide';
+import { isStandalone, isIosOrIpad } from './utils/pwaIpadUtils';
 
 const currentMode = import.meta.env.VITE_APP_MODE || import.meta.env.MODE;
 
@@ -2882,7 +2884,10 @@ export default function App() {
 
   // Render POS Interface when authenticated
   return (
-    <div dir={isArabic ? "rtl" : "ltr"} className="flex flex-col h-screen bg-slate-50 dark:bg-slate-955 text-slate-800 dark:text-slate-100 antialiased font-sans select-none">
+    <div dir={isArabic ? "rtl" : "ltr"} className="flex flex-col h-screen bg-slate-50 dark:bg-slate-955 text-slate-800 dark:text-slate-100 antialiased font-sans select-none pos-pwa-container pos-touch-nohighlight">
+
+      {/* iPad PWA Installation Banner */}
+      {isPosMode && <IpadInstallGuide />}
 
       {/* Toast Notification */}
       {notification && (
@@ -3742,26 +3747,37 @@ export default function App() {
                   <div className="flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-900/40 rounded-xl border border-slate-100 dark:border-slate-750">
                     <div className="text-right">
                       <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{isArabic ? "وضع ملء الشاشة" : "Fullscreen Mode"}</p>
-                      <p className="text-[10px] text-slate-400 dark:text-slate-555 mt-0.5">{isArabic ? "تكبير واجهة المبيعات لتغطي كامل الشاشة" : "Expand POS view to cover the entire screen"}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const nextVal = !isFullscreen;
-                        setIsFullscreen(nextVal);
-                        if (nextVal) {
-                          document.documentElement.requestFullscreen?.().catch(e => console.warn(e));
-                        } else {
-                          document.exitFullscreen?.().catch(e => console.warn(e));
+                      <p className="text-[10px] text-slate-400 dark:text-slate-555 mt-0.5">
+                        {(isIosOrIpad() || isStandalone())
+                          ? (isArabic ? "على iPad يتم ملء الشاشة تلقائياً عبر وضع PWA" : "Automatic fullscreen enabled on iPad via PWA mode")
+                          : (isArabic ? "تكبير واجهة المبيعات لتغطي كامل الشاشة" : "Expand POS view to cover the entire screen")
                         }
-                      }}
-                      className="px-3.5 py-2 text-xs font-extrabold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
-                    >
-                      {isFullscreen
-                        ? (isArabic ? "إلغاء ملء الشاشة" : "Exit Fullscreen")
-                        : (isArabic ? "ملء الشاشة" : "Go Fullscreen")
-                      }
-                    </button>
+                      </p>
+                    </div>
+                    {!(isIosOrIpad() || isStandalone()) ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextVal = !isFullscreen;
+                          setIsFullscreen(nextVal);
+                          if (nextVal) {
+                            document.documentElement.requestFullscreen?.().catch(e => console.warn(e));
+                          } else {
+                            document.exitFullscreen?.().catch(e => console.warn(e));
+                          }
+                        }}
+                        className="px-3.5 py-2 text-xs font-extrabold rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+                      >
+                        {isFullscreen
+                          ? (isArabic ? "إلغاء ملء الشاشة" : "Exit Fullscreen")
+                          : (isArabic ? "ملء الشاشة" : "Go Fullscreen")
+                        }
+                      </button>
+                    ) : (
+                      <span className="px-3 py-1.5 text-[11px] font-extrabold rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                        {isStandalone() ? (isArabic ? "تطبيق مُثبّت ✓" : "Installed PWA ✓") : (isArabic ? "وضع iPad" : "iPad Mode")}
+                      </span>
+                    )}
                   </div>
 
                   {/* Product card size toggle */}

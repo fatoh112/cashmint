@@ -1,10 +1,12 @@
 {
-  "name": "Cashmint | نقاط البيع",
-  "short_name": "Cashmint POS",
-  "description": "Cashmint Cashmint POS - نظام نقاط بيع وإدارة مطاعم متكامل",
+  "id": "/",
+  "name": "Cashmint POS",
+  "short_name": "Cashmint",
+  "description": "Cashmint POS - نظام نقاط بيع وإدارة مطاعم متكامل",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "orientation": "any",
+  "orientation": "landscape",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
   "icons": [

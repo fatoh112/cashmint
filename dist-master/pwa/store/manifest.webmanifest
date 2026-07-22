@@ -1,8 +1,10 @@
 {
+  "id": "/",
   "name": "Cashmint | إدارة المطعم",
   "short_name": "Cashmint Store",
-  "description": "Cashmint Cashmint Store - نظام نقاط بيع وإدارة مطاعم متكامل",
+  "description": "Cashmint | إدارة المطعم - نظام نقاط بيع وإدارة مطاعم متكامل",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#0f172a",

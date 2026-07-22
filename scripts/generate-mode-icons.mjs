@@ -143,9 +143,10 @@ const MODES = {
     svgBadge: '#eab308'
   },
   pos: {
-    name: 'Cashmint | نقاط البيع',
-    shortName: 'Cashmint POS',
+    name: 'Cashmint POS',
+    shortName: 'Cashmint',
     tag: 'POS',
+    orientation: 'landscape',
     bg: [15, 23, 42, 255],           // #0f172a
     badgeBorder: [245, 158, 11, 255],   // #f59e0b (Amber)
     badgeFill: [255, 255, 255, 255],   // White
@@ -359,12 +360,14 @@ for (const modeKey of Object.keys(MODES)) {
 
   // 3. Generate Web App Manifest referencing ONLY icon-192.png, icon-512.png, maskable-icon.png
   const manifestData = {
+    id: '/',
     name: MODES[modeKey].name,
     short_name: MODES[modeKey].shortName,
-    description: `Cashmint ${MODES[modeKey].shortName} - نظام نقاط بيع وإدارة مطاعم متكامل`,
+    description: `${MODES[modeKey].name} - نظام نقاط بيع وإدارة مطاعم متكامل`,
     start_url: '/',
+    scope: '/',
     display: 'standalone',
-    orientation: 'any',
+    orientation: MODES[modeKey].orientation || 'any',
     background_color: '#0f172a',
     theme_color: '#0f172a',
     icons: [

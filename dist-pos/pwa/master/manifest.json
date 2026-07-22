@@ -1,8 +1,10 @@
 {
+  "id": "/",
   "name": "Cashmint | الإدارة المركزية",
   "short_name": "Cashmint Master",
-  "description": "Cashmint Cashmint Master - نظام نقاط بيع وإدارة مطاعم متكامل",
+  "description": "Cashmint | الإدارة المركزية - نظام نقاط بيع وإدارة مطاعم متكامل",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#0f172a",
