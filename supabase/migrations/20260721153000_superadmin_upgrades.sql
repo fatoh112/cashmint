@@ -1072,7 +1072,7 @@ BEGIN
   -- Find terminal card payment config
   SELECT * INTO v_config FROM public.restaurant_payment_configs
   WHERE (location_id = v_order.store_id OR location_id IN (SELECT id FROM public.restaurant_locations WHERE store_id = v_order.store_id))
-    AND provider_type = 'stripe_android_bridge' AND is_enabled LIMIT 1;
+    AND provider_type IN ('stripe_android_bridge','stripe_server_driven') AND is_primary AND is_enabled LIMIT 1;
   
   v_loc_id := COALESCE(v_config.location_id, v_order.store_id);
 

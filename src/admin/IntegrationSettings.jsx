@@ -39,6 +39,11 @@ export default function IntegrationSettings({ store, setStore, showNotification,
   const [deviceTab, setDeviceTab] = useState('pos'); // 'pos' | 'payment'
   const [devices, setDevices] = useState([]);
   const [terminalDevices, setTerminalDevices] = useState([]);
+  const [terminalConfigs, setTerminalConfigs] = useState([]);
+  const [serverReaders, setServerReaders] = useState([]);
+  const [readerIdInput, setReaderIdInput] = useState('');
+  const [registrationCodeInput, setRegistrationCodeInput] = useState('');
+  const [readerBusy, setReaderBusy] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [orders, setOrders] = useState([]);
   const [loadingMonitor, setLoadingMonitor] = useState(false);
@@ -111,6 +116,19 @@ export default function IntegrationSettings({ store, setStore, showNotification,
         setTerminalDevices([]);
       }
 
+      const { data: configs, error: configErr } = await supabase
+        .from('restaurant_payment_configs')
+        .select('id, location_id, provider_type, is_enabled, is_primary, currency, provider_config')
+        .in('location_id', locationIds);
+      if (configErr) throw configErr;
+      setTerminalConfigs(configs || []);
+      const serverConfigIds = (configs || []).filter(c => c.provider_type === 'stripe_server_driven').map(c => c.id);
+      if (serverConfigIds.length) {
+        const { data: readers, error: readerErr } = await supabase.from('stripe_terminal_readers').select('*').in('payment_config_id', serverConfigIds).order('updated_at', { ascending: false });
+        if (readerErr) throw readerErr;
+        setServerReaders(readers || []);
+      } else setServerReaders([]);
+
       if (devs && devs.length > 0) {
         const deviceIds = devs.map(d => d.id);
         const { data: sess, error: sessErr } = await supabase
@@ -138,6 +156,26 @@ export default function IntegrationSettings({ store, setStore, showNotification,
       setLoadingMonitor(false);
     }
   }, [store?.id]);
+
+  const manageServerReader = async (action, payload = {}) => {
+    const config = terminalConfigs.find(c => c.provider_type === 'stripe_server_driven');
+    if (!config) return showNotification('Create a server-driven payment configuration first.', 'error');
+    try {
+      setReaderBusy(true);
+      const { error } = await supabase.functions.invoke('manage-server-driven-reader', { body: { action, payment_config_id: config.id, stripe_reader_id: readerIdInput.trim() || undefined, registration_code: registrationCodeInput.trim() || undefined, ...payload } });
+      if (error) throw error;
+      setReaderIdInput(''); setRegistrationCodeInput(''); await fetchDevicesAndSessions(true);
+      showNotification(action === 'register' ? 'WisePOS E registered.' : 'Reader updated.', 'success');
+    } catch (error) { showNotification(error.message || 'Reader operation failed', 'error'); }
+    finally { setReaderBusy(false); }
+  };
+
+  const setActiveProvider = async (config) => {
+    if (!window.confirm(`Set ${config.provider_type} as the active card provider?`)) return;
+    const { error } = await supabase.rpc('set_active_terminal_provider', { p_location_id: config.location_id, p_provider_type: config.provider_type, p_payment_config_id: config.id });
+    if (error) showNotification(error.message || 'Provider switch failed', 'error');
+    else { await fetchDevicesAndSessions(true); showNotification('Active card provider updated.', 'success'); }
+  };
 
   useEffect(() => {
     if (!store?.id) return;
@@ -700,6 +738,35 @@ export default function IntegrationSettings({ store, setStore, showNotification,
         </div>
 
       </form>
+
+      {/* PROVIDER MANAGEMENT SECTION */}
+      <div className="border-t border-slate-100 dark:border-slate-800 pt-8 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-extrabold text-slate-800 dark:text-white">Card terminal providers</h2>
+            <p className="text-xs text-slate-400 mt-1">Android Bridge / WisePad 3 remains available. WisePOS E stays disabled until explicitly registered and approved.</p>
+          </div>
+          <CreditCard className="w-5 h-5 text-emerald-500" />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {terminalConfigs.filter(c => ['stripe_android_bridge','stripe_server_driven'].includes(c.provider_type)).map(config => {
+            const reader = serverReaders.find(r => r.payment_config_id === config.id);
+            const isServer = config.provider_type === 'stripe_server_driven';
+            return <div key={config.id} className="rounded-2xl border border-slate-200 dark:border-slate-700 p-4 space-y-3 bg-white dark:bg-slate-800">
+              <div className="flex items-center justify-between">
+                <div><p className="font-extrabold text-sm text-slate-800 dark:text-white">{isServer ? 'Server-Driven / WisePOS E' : 'Android Bridge / WisePad 3'}</p><p className="text-[10px] text-slate-400 font-mono">{config.provider_type}</p></div>
+                <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${config.is_primary ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{config.is_primary ? 'Active' : 'Available'}</span>
+              </div>
+              {isServer ? <>
+                <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-500"><span>Reader: <b className="text-slate-700 dark:text-slate-200">{reader?.label || 'Not registered'}</b></span><span>Status: <b className="text-slate-700 dark:text-slate-200">{reader?.status || '—'}</b></span><span>Reader ID: <b className="font-mono text-slate-700 dark:text-slate-200">{reader?.stripe_reader_id || '—'}</b></span><span>Device: <b className="text-slate-700 dark:text-slate-200">{reader?.device_type || '—'}</b></span></div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2"><input value={registrationCodeInput} onChange={e => setRegistrationCodeInput(e.target.value)} placeholder="WisePOS E pairing code" className="px-3 py-2 rounded-lg border bg-transparent text-xs" /><button disabled={readerBusy || !registrationCodeInput.trim()} onClick={() => manageServerReader('register')} className="rounded-lg bg-sky-600 text-white text-xs font-bold px-3 py-2 disabled:opacity-50">Register pairing code</button><input value={readerIdInput} onChange={e => setReaderIdInput(e.target.value)} placeholder="Existing Stripe Reader ID" className="px-3 py-2 rounded-lg border bg-transparent text-xs" /><button disabled={readerBusy || !readerIdInput.trim()} onClick={() => manageServerReader('attach_existing')} className="rounded-lg bg-slate-700 text-white text-xs font-bold px-3 py-2 disabled:opacity-50">Attach existing reader</button></div>
+                <div className="flex gap-2"><button disabled={!reader} onClick={() => manageServerReader('refresh', { reader_id: reader?.id })} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50">Refresh</button>{reader && <button onClick={() => manageServerReader(reader.is_enabled ? 'disable' : 'enable', { reader_id: reader.id })} className="rounded-lg border px-3 py-2 text-xs font-bold">{reader.is_enabled ? 'Disable' : 'Enable'}</button>}</div>
+              </> : <p className="text-[10px] text-slate-500">Enrollment code, bridge heartbeat, WisePad 3 status, and existing controls remain unchanged.</p>}
+              <button disabled={config.is_primary || (isServer && (!reader || reader.status !== 'online'))} onClick={() => setActiveProvider(config)} className="w-full rounded-lg bg-amber-500 text-white text-xs font-bold py-2 disabled:opacity-50">Set as active provider</button>
+            </div>;
+          })}
+        </div>
+      </div>
 
       {/* DEVICE MANAGEMENT SECTION */}
       <div className="border-t border-slate-100 dark:border-slate-800 pt-8 space-y-6">
