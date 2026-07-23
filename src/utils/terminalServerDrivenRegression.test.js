@@ -72,8 +72,8 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(cancelSource).toContain('syncServerDrivenReader');
     expect(cancelSource).toContain('reader_release_pending');
     expect(cancelSource).toContain("reader_cancel_action_failed");
-    expect(webhookSource).toContain('let cancellationError: string | null = null');
-    expect(webhookSource).toContain("reader_cancel_action_failed");
+    expect(webhookSource).toContain('isNoActionInProgressError');
+    expect(webhookSource).not.toContain('reader_cancel_action_failed');
     expect(webhookSource).toContain('const safeMessage = errorMessage(error)');
     expect(cancelSource).toContain('cancellableRequestStatuses');
     expect(cancelSource).toContain('cancellation_pending');
@@ -174,7 +174,7 @@ describe('WisePOS E server-driven regression guards', () => {
   it('handles terminal.reader.action_failed as a real failed state', () => {
     expect(webhookSource).toContain("type === 'terminal.reader.action_failed'");
     expect(webhookSource).toContain("status: 'failed'");
-    expect(webhookSource).toContain('readAndSyncReader(db, request, request.restaurant_payment_configs, false)');
+    expect(webhookSource).toContain('readAndSyncReader(db, request, config, false)');
   });
 
   it('completes succeeded PaymentIntents even when the request was previously failed', () => {
@@ -185,10 +185,26 @@ describe('WisePOS E server-driven regression guards', () => {
   });
 
   it('uses only valid webhook relationships and checks lookup errors', () => {
-    expect(webhookSource).toContain("const paymentRequestSelect = '*, restaurant_payment_configs(provider_config)'");
+    expect(webhookSource).toContain("const paymentRequestSelect = '*, restaurant_payment_configs(id, provider_config)'");
     expect(webhookSource).not.toContain('stripe_terminal_readers(stripe_reader_id)');
     expect(webhookSource).toContain('if (error) throw error');
-    expect(webhookSource).toContain(".eq('stripe_reader_id', request.stripe_reader_id)");
+    expect(webhookSource).toContain(".eq('stripe_reader_id', stripeReaderId)");
+    expect(webhookSource).toContain(".eq('payment_config_id', paymentConfigId)");
+    expect(webhookSource).not.toContain(".eq('payment_config_id', config.id)");
+  });
+
+  it('validates webhook UUIDs before reader cleanup and preserves final payment states', () => {
+    expect(webhookSource).toContain('function requireUuid(value: unknown, fieldName: string)');
+    expect(webhookSource).toContain("const paymentConfigId = requireUuid(request.payment_config_id, 'payment_config_id')");
+    expect(webhookSource).toContain("const stripeReaderId = requireNonEmptyString(request.stripe_reader_id, 'stripe_reader_id')");
+    expect(webhookSource).not.toContain('config.id');
+    expect(webhookSource).toContain('updateRequestUnlessSucceeded');
+    expect(webhookSource).not.toContain('await updateRequest(db, request.id');
+    expect(webhookSource).toContain('isNoActionInProgressError');
+    expect(webhookSource).toContain('if (!isNoActionInProgressError(error)) throw error');
+    expect(webhookSource).toContain("action_status: actionIsActive ? action.status : 'idle'");
+    expect(webhookSource).toContain("action_type: actionIsActive ? action.type ?? null : null");
+    expect((webhookSource.match(/readAndSyncReader\(db, request, config,/g) ?? []).length).toBe(4);
   });
 
   it('keeps failed webhook events retryable instead of processing them', () => {

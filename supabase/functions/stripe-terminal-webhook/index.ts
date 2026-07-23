@@ -1,7 +1,8 @@
 import { json, service, stripeRequest } from '../_shared/terminal.ts'
 
 const encoder = new TextEncoder()
-const paymentRequestSelect = '*, restaurant_payment_configs(provider_config)'
+const paymentRequestSelect = '*, restaurant_payment_configs(id, provider_config)'
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('')
 const constantTimeEqual = (a: string, b: string) => a.length === b.length && [...a].reduce((d, _, i) => d | (a.charCodeAt(i) ^ b.charCodeAt(i)), 0) === 0
 
@@ -20,6 +21,23 @@ function errorMessage(error: unknown) {
 function stripeTimestamp(value: unknown) {
   const timestamp = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+}
+
+function requireUuid(value: unknown, fieldName: string) {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!uuidPattern.test(normalized)) throw new Error(`Invalid ${fieldName}`)
+  return normalized
+}
+
+function requireNonEmptyString(value: unknown, fieldName: string) {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized) throw new Error(`Missing ${fieldName}`)
+  return normalized
+}
+
+function isNoActionInProgressError(error: unknown) {
+  const message = errorMessage(error).toLowerCase()
+  return message.includes('no action in progress') || message.includes('no action is in progress') || message.includes('action_not_in_progress')
 }
 
 async function validStripeSignature(payload: string, signature: string | null) {
@@ -80,39 +98,40 @@ async function findValidatedMetadataFallback(db: ReturnType<typeof service>, obj
   return request
 }
 
-async function readAndSyncReader(db: ReturnType<typeof service>, request: Record<string, any>, config: Record<string, any>, cancelIfInProgress = false) {
-  if (request.provider_type !== 'stripe_server_driven' || !request.stripe_reader_id) return null
+async function readAndSyncReader(db: ReturnType<typeof service>, request: Record<string, any>, providerConfig: Record<string, any>, cancelIfInProgress = false) {
+  if (request.provider_type !== 'stripe_server_driven') return null
+  const paymentConfigId = requireUuid(request.payment_config_id, 'payment_config_id')
+  const stripeReaderId = requireNonEmptyString(request.stripe_reader_id, 'stripe_reader_id')
 
   const { data: storedReader, error: readerError } = await db.from('stripe_terminal_readers')
-    .select('*')
-    .eq('stripe_reader_id', request.stripe_reader_id)
-    .eq('payment_config_id', config.id)
+    .select('id, stripe_reader_id')
+    .eq('stripe_reader_id', stripeReaderId)
+    .eq('payment_config_id', paymentConfigId)
     .maybeSingle()
   if (readerError) throw readerError
   if (!storedReader) throw new Error('Stored WisePOS E reader was not found')
 
-  let reader = await stripeRequest(`/terminal/readers/${request.stripe_reader_id}`, config.provider_config ?? {})
-  let cancellationError: string | null = null
+  let reader = await stripeRequest(`/terminal/readers/${stripeReaderId}`, providerConfig ?? {})
   if (cancelIfInProgress && reader.action?.status === 'in_progress') {
     try {
-      await stripeRequest(`/terminal/readers/${request.stripe_reader_id}/cancel_action`, config.provider_config ?? {}, { method: 'POST', body: '' }, `reader-webhook-cancel:${request.id}`)
+      await stripeRequest(`/terminal/readers/${stripeReaderId}/cancel_action`, providerConfig ?? {}, { method: 'POST', body: '' }, `reader-webhook-cancel:${request.id}`)
     } catch (error) {
-      // A final Reader action can make cancel_action reject; its subsequent Reader state is what we persist.
-      cancellationError = errorMessage(error)
+      if (!isNoActionInProgressError(error)) throw error
     }
-    reader = await stripeRequest(`/terminal/readers/${request.stripe_reader_id}`, config.provider_config ?? {})
+    reader = await stripeRequest(`/terminal/readers/${stripeReaderId}`, providerConfig ?? {})
   }
 
   const action = reader.action && typeof reader.action === 'object' ? reader.action : {}
+  const actionIsActive = action.status === 'in_progress' || action.status === 'processing'
   const { error: updateError } = await db.from('stripe_terminal_readers')
     .update({
       status: reader.status ?? null,
-      action_status: action.status ?? 'idle',
-      action_type: action.type ?? null,
+      action_status: actionIsActive ? action.status : 'idle',
+      action_type: actionIsActive ? action.type ?? null : null,
       last_seen_at: stripeTimestamp(reader.last_seen_at),
       last_synced_at: new Date().toISOString(),
-      last_error_code: action.failure_code ?? (cancellationError ? 'reader_cancel_action_failed' : null),
-      last_error_message: action.failure_message ?? cancellationError,
+      last_error_code: action.failure_code ?? null,
+      last_error_message: action.failure_message ?? null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', storedReader.id)
@@ -125,8 +144,8 @@ async function markProcessed(db: ReturnType<typeof service>, eventId: string) {
   if (error) throw error
 }
 
-async function updateRequest(db: ReturnType<typeof service>, requestId: string, values: Record<string, unknown>) {
-  const { error } = await db.from('payment_requests').update(values).eq('id', requestId)
+async function updateRequestUnlessSucceeded(db: ReturnType<typeof service>, requestId: string, values: Record<string, unknown>) {
+  const { error } = await db.from('payment_requests').update(values).eq('id', requestId).neq('status', 'succeeded')
   if (error) throw error
 }
 
@@ -168,7 +187,7 @@ Deno.serve(async (req) => {
     if (!config) throw new Error('Payment request Stripe configuration is missing')
 
     if (type === 'terminal.reader.action_failed') {
-      await updateRequest(db, request.id, {
+      await updateRequestUnlessSucceeded(db, request.id, {
         status: 'failed',
         failure_code: object.action?.failure_code ?? 'reader_action_failed',
         failure_message: object.action?.failure_message ?? 'Reader action failed',
@@ -178,7 +197,7 @@ Deno.serve(async (req) => {
         finalized_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      await readAndSyncReader(db, request, request.restaurant_payment_configs, false)
+      await readAndSyncReader(db, request, config, false)
       await markProcessed(db, eventId)
       return json({ received: true })
     }
@@ -186,13 +205,13 @@ Deno.serve(async (req) => {
     const verified = intentId ? await stripeRequest(`/payment_intents/${intentId}`, config) : null
 
     if (type === 'terminal.reader.action_succeeded' && verified?.status !== 'succeeded') {
-      await updateRequest(db, request.id, {
+      await updateRequestUnlessSucceeded(db, request.id, {
         status: 'unknown',
         reader_action_status: 'succeeded',
         last_reconciled_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      await readAndSyncReader(db, request, request.restaurant_payment_configs, false)
+      await readAndSyncReader(db, request, config, false)
       await markProcessed(db, eventId)
       return json({ received: true })
     }
@@ -210,21 +229,21 @@ Deno.serve(async (req) => {
       })
       if (error) throw error
     } else if (verified.status === 'canceled') {
-      await updateRequest(db, request.id, {
+      await updateRequestUnlessSucceeded(db, request.id, {
         status: 'cancelled',
         failure_code: verified.last_payment_error?.code ?? null,
         failure_message: verified.last_payment_error?.message ?? 'Payment cancelled',
         finalized_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      await readAndSyncReader(db, request, request.restaurant_payment_configs, true)
+      await readAndSyncReader(db, request, config, true)
     } else if (verified.status === 'requires_payment_method') {
       const reader = request.provider_type === 'stripe_server_driven'
-        ? await readAndSyncReader(db, request, request.restaurant_payment_configs, false)
+        ? await readAndSyncReader(db, request, config, false)
         : null
       const readerActionStatus = reader?.action?.status ?? null
       if (readerActionStatus === 'in_progress') {
-        await updateRequest(db, request.id, {
+        await updateRequestUnlessSucceeded(db, request.id, {
           status: ['waiting_for_card', 'processing'].includes(request.status) ? request.status : 'processing',
           failure_code: null,
           failure_message: null,
@@ -233,7 +252,7 @@ Deno.serve(async (req) => {
           updated_at: new Date().toISOString(),
         })
       } else if (verified.last_payment_error || readerActionStatus === 'failed') {
-        await updateRequest(db, request.id, {
+        await updateRequestUnlessSucceeded(db, request.id, {
           status: 'failed',
           failure_code: verified.last_payment_error?.code ?? reader?.action?.failure_code ?? 'payment_declined',
           failure_message: verified.last_payment_error?.message ?? reader?.action?.failure_message ?? 'Payment declined',
@@ -242,14 +261,14 @@ Deno.serve(async (req) => {
           updated_at: new Date().toISOString(),
         })
       } else {
-        await updateRequest(db, request.id, {
+        await updateRequestUnlessSucceeded(db, request.id, {
           status: ['waiting_for_card', 'processing'].includes(request.status) ? request.status : 'processing',
           last_reconciled_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
       }
     } else {
-      await updateRequest(db, request.id, {
+      await updateRequestUnlessSucceeded(db, request.id, {
         status: 'unknown',
         last_reconciled_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
