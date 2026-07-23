@@ -16,7 +16,8 @@ const staleReaderMigration = read('../../supabase/migrations/20260723160529_reco
 const posAccessMigration = read('../../supabase/migrations/20260723163259_restore_terminal_rpc_pos_access.sql');
 const activePaymentMigration = read('../../supabase/migrations/20260723203259_expose_active_terminal_payment_to_pos.sql');
 const cancellationRecoveryMigration = read('../../supabase/migrations/20260723212748_fix_terminal_cancellation_recovery.sql');
-const splitTerminalVerificationMigration = read('../../supabase/migrations/20260724120000_fix_split_terminal_verification.sql');
+const splitTerminalVerificationMigration = read('../../supabase/migrations/20260723224030_fix_split_terminal_verification.sql');
+const manualSaleMigration = read('../../supabase/migrations/20260723234408_add_manual_card_sale.sql');
 const terminalAttemptSource = read('./terminalAttempt.js');
 
 describe('WisePOS E server-driven regression guards', () => {
@@ -192,6 +193,20 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(webhookSource).toContain(".eq('stripe_reader_id', stripeReaderId)");
     expect(webhookSource).toContain(".eq('payment_config_id', paymentConfigId)");
     expect(webhookSource).not.toContain(".eq('payment_config_id', config.id)");
+  });
+
+  it('keeps manual card sale creation accounted, hidden, and idempotent', () => {
+    expect(appSource).toContain("supabase.rpc('create_manual_card_sale'");
+    expect(appSource).toContain('parseManualSaleAmountToCents');
+    expect(appSource).toContain('verifyManualSaleCompletion');
+    expect(appSource).toContain('setActiveManualSale(null)');
+    expect(manualSaleMigration).toContain('manual_sale_idempotency_key');
+    expect(manualSaleMigration).toContain('system_key');
+    expect(manualSaleMigration).toContain("'stripe_server_driven'");
+    expect(manualSaleMigration).toContain("'Manual Sale'");
+    expect(manualSaleMigration).toContain("'card', 'pending'");
+    expect(manualSaleMigration).toContain("coalesce(p.is_system, false) = false");
+    expect(manualSaleMigration).toContain('orders_manual_sale_idempotency_uidx');
   });
 
   it('validates webhook UUIDs before reader cleanup and preserves final payment states', () => {

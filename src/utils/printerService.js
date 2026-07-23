@@ -38,6 +38,17 @@ function escapeXML(str) {
   });
 }
 
+function escapeHTML(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[&<>"']/g, (match) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[match]));
+}
+
 /**
  * Normalizes store input object or string into a structured store info object, taking template header overrides into account.
  */
@@ -329,6 +340,9 @@ export async function buildReceiptXML(order, storeInput = 'Cashmint', options = 
           } else {
             xml += `<text align="left" font="font_a" em="true">${escapeXML(leftPart)}&#10;</text>`;
           }
+          if (item.description) {
+            xml += `<text align="left">${escapeXML(`  ${item.description}`)}&#10;</text>`;
+          }
 
           if (config.items?.show_modifiers && item.modifiers && item.modifiers.length > 0) {
             item.modifiers.forEach(mod => {
@@ -552,6 +566,9 @@ export function printViaIframeFallback(order, storeInput = 'Cashmint', options =
                   ${showPrices ? `<span class="item-price">${itemTotal} EUR</span>` : ''}
                 </div>
               `;
+              if (item.description) {
+                bodyHtml += `<div class="modifier-row">${escapeHTML(`  ${item.description}`)}</div>`;
+              }
 
               if (config.items?.show_modifiers && item.modifiers && item.modifiers.length > 0) {
                 item.modifiers.forEach(mod => {

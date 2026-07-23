@@ -5,6 +5,7 @@ import Login from './Login';
 import { printReceipt } from './utils/printerService';
 import { calculateOrderAccounting } from './utils/taxCalculator';
 import { validateSplitAmounts, calculateFiftyFiftySplit, toCents, fromCents } from './utils/splitPaymentUtils';
+import { parseManualSaleAmountToCents } from './utils/manualSaleUtils';
 import { createTerminalAttemptFinalizer, isFinalTerminalStatus, normalizeTerminalStatus } from './utils/terminalAttempt';
 import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
@@ -607,6 +608,16 @@ export default function App() {
   const [terminalRecovery, setTerminalRecovery] = useState(null);
   const [pendingTerminalOrder, setPendingTerminalOrder] = useState(null);
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
+  const [showManualSaleModal, setShowManualSaleModal] = useState(false);
+  const [manualSaleAmountInput, setManualSaleAmountInput] = useState('');
+  const [manualSaleDescription, setManualSaleDescription] = useState('');
+  const [manualSaleAccountingGroups, setManualSaleAccountingGroups] = useState([]);
+  const [manualSaleAccountingGroupId, setManualSaleAccountingGroupId] = useState('');
+  const [manualSaleState, setManualSaleState] = useState('entering_amount');
+  const [manualSaleError, setManualSaleError] = useState('');
+  const [manualSaleSubmitting, setManualSaleSubmitting] = useState(false);
+  const [activeManualSale, setActiveManualSale] = useState(null);
+  const manualSaleIdempotencyKeyRef = useRef(null);
   const activePaymentRequestIdRef = useRef(null);
   const activePaymentOrderIdRef = useRef(null);
   const activePaymentOrderRef = useRef(null);
@@ -644,6 +655,220 @@ export default function App() {
       status: availability.active_payment_status || 'waiting_for_card',
     });
   }, [activateTerminalAttempt]);
+
+  const handleOpenManualSale = async () => {
+    if (activeManualSale && !activePaymentRequestId) {
+      setShowManualSaleModal(true);
+      return;
+    }
+    if (checkoutInFlightRef.current || activePaymentRequestId || activeManualSale) {
+      showNotification(isArabic ? 'يوجد دفع بالبطاقة قيد التنفيذ.' : 'A card payment is already in progress.', 'info');
+      return;
+    }
+    const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+    if (!deviceId) {
+      showNotification(isArabic ? 'جهاز نقطة البيع غير متاح.' : 'The POS device is not available.', 'error');
+      return;
+    }
+    setManualSaleError('');
+    setManualSaleState('entering_amount');
+    setShowManualSaleModal(true);
+    setManualSaleSubmitting(true);
+    try {
+      const { data, error } = await supabase.rpc('get_pos_accounting_groups', {
+        p_pos_device_id: deviceId,
+        p_order_type: orderType,
+      });
+      if (error) throw error;
+      const groups = Array.isArray(data) ? data : [];
+      setManualSaleAccountingGroups(groups);
+      setManualSaleAccountingGroupId(previous => previous && groups.some(group => group.id === previous) ? previous : (groups[0]?.id || ''));
+      if (groups.length === 0) {
+        setManualSaleError(isArabic ? 'لا توجد مجموعة ضريبية محاسبية مفعلة.' : 'No active accounting/VAT group is configured for this store.');
+      }
+    } catch (error) {
+      setManualSaleError(error.message || (isArabic ? 'تعذر تحميل مجموعات الضريبة.' : 'Unable to load accounting groups.'));
+    } finally {
+      setManualSaleSubmitting(false);
+    }
+  };
+
+  const resetManualSaleForm = () => {
+    setShowManualSaleModal(false);
+    setManualSaleAmountInput('');
+    setManualSaleDescription('');
+    setManualSaleAccountingGroupId('');
+    setManualSaleAccountingGroups([]);
+    setManualSaleState('entering_amount');
+    setManualSaleError('');
+    manualSaleIdempotencyKeyRef.current = null;
+  };
+
+  const startManualSaleTerminalRequest = async (requestId) => {
+    if (!requestId) throw new Error('Manual card payment request was not returned by the server.');
+    const { error } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
+      body: { payment_request_id: requestId, ...terminalDeviceCredentials() },
+    });
+    if (error) throw error;
+  };
+
+  const handleManualSaleSubmit = async (event) => {
+    event?.preventDefault?.();
+    if (manualSaleSubmitting || checkoutInFlightRef.current || activePaymentRequestId || activeManualSale) return;
+    const amountCents = parseManualSaleAmountToCents(manualSaleAmountInput);
+    if (!amountCents) {
+      setManualSaleError(isArabic ? 'أدخل مبلغاً موجباً بحد أقصى منزلتين عشريتين.' : 'Enter a positive amount with no more than two decimal places.');
+      return;
+    }
+    if (!manualSaleAccountingGroupId) {
+      setManualSaleError(isArabic ? 'اختر المجموعة المحاسبية والضريبية.' : 'Choose an accounting/VAT group.');
+      return;
+    }
+    if (terminalAvailability.providerType !== 'stripe_server_driven' || !terminalAvailability.available) {
+      setManualSaleError(isArabic ? 'قارئ WisePOS E غير متاح حالياً.' : 'The WisePOS E reader is not available right now.');
+      return;
+    }
+    const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+    if (!deviceId) {
+      setManualSaleError(isArabic ? 'جهاز نقطة البيع غير متاح.' : 'The POS device is not available.');
+      return;
+    }
+    if (!manualSaleIdempotencyKeyRef.current) {
+      const operationId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      manualSaleIdempotencyKeyRef.current = `manual-sale:${deviceId}:${operationId}`;
+    }
+
+    checkoutInFlightRef.current = true;
+    setManualSaleSubmitting(true);
+    setManualSaleState('creating_sale');
+    setManualSaleError('');
+    try {
+      const { data, error } = await supabase.rpc('create_manual_card_sale', {
+        p_amount_cents: amountCents,
+        p_description: manualSaleDescription.trim() || null,
+        p_accounting_group_id: manualSaleAccountingGroupId,
+        p_pos_device_id: deviceId,
+        p_idempotency_key: manualSaleIdempotencyKeyRef.current,
+        p_order_type: orderType,
+      });
+      if (error) throw error;
+      const result = Array.isArray(data) ? data[0] : data;
+      const order = result?.order;
+      const request = result?.payment_request;
+      if (!order?.id || !request?.id || Number(result.amount_cents) !== amountCents) {
+        throw new Error('The manual sale was not returned with an exact payment request.');
+      }
+      const manualSale = {
+        orderId: order.id,
+        order,
+        amountCents,
+        description: manualSaleDescription.trim(),
+        accountingGroupId: manualSaleAccountingGroupId,
+        paymentRequestId: request.id,
+        provider: 'stripe_server_driven',
+      };
+      setActiveManualSale(manualSale);
+      setManualSaleState('waiting_for_card');
+      activePaymentOrderRef.current = order;
+      setPendingTerminalOrder(null);
+      activateTerminalAttempt({
+        requestId: request.id,
+        orderId: order.id,
+        provider: 'stripe_server_driven',
+        status: request.status || 'pending',
+        order,
+      });
+      setShowManualSaleModal(false);
+      await startManualSaleTerminalRequest(request.id);
+      showNotification(isArabic ? 'تم إرسال مبلغ البيع اليدوي إلى WisePOS E.' : 'Manual sale sent to the WisePOS E reader.', 'info');
+    } catch (error) {
+      setManualSaleState('failed');
+      setManualSaleError(error.message || (isArabic ? 'تعذر إنشاء البيع اليدوي.' : 'Unable to create the manual sale.'));
+      setShowManualSaleModal(true);
+    } finally {
+      checkoutInFlightRef.current = false;
+      setManualSaleSubmitting(false);
+    }
+  };
+
+  const handleRetryManualSale = async () => {
+    if (!activeManualSale || checkoutInFlightRef.current || activePaymentRequestId) return;
+    const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+    if (!deviceId) return;
+    checkoutInFlightRef.current = true;
+    setManualSaleSubmitting(true);
+    setManualSaleState('creating_sale');
+    setManualSaleError('');
+    try {
+      const { data, error } = await supabase.rpc('request_terminal_card_payment', {
+        p_order_id: activeManualSale.orderId,
+        p_pos_device_id: deviceId,
+      });
+      if (error) throw error;
+      const request = Array.isArray(data) ? data[0] : data;
+      if (!request?.id || request.provider_type !== 'stripe_server_driven') {
+        throw new Error('The WisePOS E retry request was not accepted.');
+      }
+      const nextSale = { ...activeManualSale, paymentRequestId: request.id, provider: request.provider_type };
+      setActiveManualSale(nextSale);
+      setManualSaleState('waiting_for_card');
+      activePaymentOrderRef.current = activeManualSale.order;
+      activateTerminalAttempt({
+        requestId: request.id,
+        orderId: activeManualSale.orderId,
+        provider: request.provider_type,
+        status: request.status || 'pending',
+        order: activeManualSale.order,
+      });
+      setShowManualSaleModal(false);
+      await startManualSaleTerminalRequest(request.id);
+    } catch (error) {
+      setManualSaleState('failed');
+      setManualSaleError(error.message || (isArabic ? 'تعذرت إعادة المحاولة.' : 'Retry failed.'));
+      setShowManualSaleModal(true);
+    } finally {
+      checkoutInFlightRef.current = false;
+      setManualSaleSubmitting(false);
+    }
+  };
+
+  const handleCancelManualSale = async () => {
+    if (!activeManualSale || checkoutInFlightRef.current) return;
+    const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+    checkoutInFlightRef.current = true;
+    setManualSaleSubmitting(true);
+    try {
+      if (activePaymentRequestId) {
+        const { error: cancelError } = await supabase.functions.invoke('cancel-terminal-payment', {
+          body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() },
+        });
+        if (cancelError) throw cancelError;
+      }
+      const { error } = await supabase.rpc('cancel_accounting_card_payment', {
+        p_order_id: activeManualSale.orderId,
+        p_device_id: deviceId,
+      });
+      if (error) throw error;
+      setCart([]);
+      setActiveManualSale(null);
+      resetManualSaleForm();
+      setPendingTerminalOrder(null);
+      setTerminalRecovery(null);
+      activePaymentRequestIdRef.current = null;
+      activePaymentOrderIdRef.current = null;
+      activePaymentOrderRef.current = null;
+      terminalAttemptRef.current = { paymentRequestId: null, generation: terminalAttemptRef.current.generation + 1 };
+      setActivePaymentRequestId(null);
+      setActivePaymentOrderId(null);
+      setShowStripeModal(false);
+      showNotification(isArabic ? 'تم إلغاء البيع اليدوي.' : 'Manual sale cancelled.', 'info');
+    } catch (error) {
+      setManualSaleError(error.message || (isArabic ? 'تعذر إلغاء البيع اليدوي.' : 'Unable to cancel the manual sale.'));
+    } finally {
+      checkoutInFlightRef.current = false;
+      setManualSaleSubmitting(false);
+    }
+  };
 
   // Split Payment states
   const [showSplitModal, setShowSplitModal] = useState(false);
@@ -1568,7 +1793,8 @@ export default function App() {
             if (
               payload.new.status === 'completed' &&
               payload.new.id === activePaymentOrderIdRef.current &&
-              !activeSplit
+              !activeSplit &&
+              !activeManualSale
             ) {
               enqueueAutoReceiptPrint(payload.new);
 
@@ -1604,7 +1830,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(ordersSubscription);
     };
-  }, [deviceAuth, store, activeSplit, isArabic, enqueueAutoReceiptPrint]);
+  }, [deviceAuth, store, activeSplit, activeManualSale, isArabic, enqueueAutoReceiptPrint]);
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
@@ -1669,6 +1895,34 @@ export default function App() {
         order?.status === 'completed'
       );
     };
+    const verifyManualSaleCompletion = async (request, orderId) => {
+      if (!activeManualSale || activeManualSale.paymentRequestId !== request.id) return false;
+      const [requestRead, paymentRead, orderRead] = await Promise.all([
+        supabase.from('payment_requests').select('id,order_id,status,stripe_payment_intent_id,amount_cents').eq('id', request.id).maybeSingle(),
+        supabase.from('payments').select('id,order_id,method,status,amount,provider,provider_reference').eq('order_id', orderId).eq('method', 'card'),
+        supabase.from('orders').select('id,status,total_amount').eq('id', orderId).maybeSingle(),
+      ]);
+      if (requestRead.error || paymentRead.error || orderRead.error) return false;
+      const currentRequest = requestRead.data;
+      const payments = paymentRead.data || [];
+      const payment = payments.length === 1 ? payments[0] : null;
+      const order = orderRead.data;
+      return Boolean(
+        currentRequest?.id === request.id &&
+        currentRequest.order_id === orderId &&
+        currentRequest.status === 'succeeded' &&
+        Number(currentRequest.amount_cents) === Number(activeManualSale.amountCents) &&
+        currentRequest.stripe_payment_intent_id &&
+        payment?.order_id === orderId &&
+        payment.method === 'card' &&
+        payment.status === 'paid' &&
+        payment.provider === 'stripe' &&
+        payment.provider_reference === currentRequest.stripe_payment_intent_id &&
+        Number(payment.amount) === Number(order?.total_amount) &&
+        order?.id === orderId &&
+        order.status === 'completed'
+      );
+    };
     const finalizeTerminalAttempt = createTerminalAttemptFinalizer({
       paymentRequestId,
       isCurrentAttempt,
@@ -1676,6 +1930,7 @@ export default function App() {
       removeRealtime,
       resetState: ({ finalStatus, outcome, orderId, receiptOrder, message }) => {
         const recoveryOrder = receiptOrder || activePaymentOrderRef.current || (orderId ? { id: orderId } : null);
+        const manualSale = activeManualSale;
         activePaymentRequestIdRef.current = null;
         activePaymentOrderIdRef.current = null;
         setActivePaymentRequestId(null);
@@ -1684,6 +1939,28 @@ export default function App() {
         checkoutInFlightRef.current = false;
         setIsSubmittingSplit(false);
         setStripeStatus(finalStatus);
+
+        if (manualSale) {
+          if (outcome === 'success') {
+            if (recoveryOrder) enqueueAutoReceiptPrint({ ...recoveryOrder, status: 'completed' });
+            if (localStorage.getItem('order_complete_sound_enabled') === 'true') playChime();
+            setCart([]);
+            setActiveManualSale(null);
+            resetManualSaleForm();
+            setPendingTerminalOrder(null);
+            setTerminalRecovery(null);
+            setShowStripeModal(false);
+            activePaymentOrderRef.current = null;
+          } else {
+            setManualSaleState(finalStatus);
+            setManualSaleError(message || (finalStatus === 'cancelled' ? 'Payment cancelled' : 'Card payment could not be confirmed'));
+            setActiveManualSale(previous => previous ? { ...previous, paymentRequestId: null } : previous);
+            setShowStripeModal(false);
+            setShowManualSaleModal(true);
+            activePaymentOrderRef.current = manualSale.order;
+          }
+          return;
+        }
 
         if (outcome === 'success') {
           if (recoveryOrder) enqueueAutoReceiptPrint({ ...recoveryOrder, status: 'completed' });
@@ -1735,6 +2012,9 @@ export default function App() {
       if (!request || !isCurrentAttempt(paymentRequestId)) return;
       const status = normalizeTerminalStatus(request.status);
       setStripeStatus(status);
+      if (activeManualSale) {
+        setManualSaleState(status === 'succeeded' ? 'verifying_payment' : status === 'processing' ? 'processing' : status);
+      }
       if (status === 'succeeded') {
         const orderId = activePaymentOrderIdRef.current || request.order_id;
         if (!orderId) return;
@@ -1745,6 +2025,16 @@ export default function App() {
           if (!verifiedSplit) {
             setShowStripeModal(true);
             showNotification('Verifying card payment with Stripe...', 'info');
+            return;
+          }
+        }
+        if (activeManualSale) {
+          setStripeStatus('verifying_payment');
+          const verifiedManualSale = await verifyManualSaleCompletion(request, orderId);
+          if (!isCurrentAttempt(paymentRequestId)) return;
+          if (!verifiedManualSale) {
+            setShowStripeModal(true);
+            showNotification('Verifying the exact manual-sale payment with Stripe...', 'info');
             return;
           }
         }
@@ -1836,7 +2126,7 @@ export default function App() {
       clearPolling();
       removeRealtime();
     };
-  }, [activePaymentRequestId, activePaymentProvider, activeSplit, deviceAuth?.deviceId, enqueueAutoReceiptPrint, isArabic, showNotification, cart]);
+  }, [activePaymentRequestId, activePaymentProvider, activeSplit, activeManualSale, deviceAuth?.deviceId, enqueueAutoReceiptPrint, isArabic, showNotification, cart]);
 
 
   // Filtered Products
@@ -3815,6 +4105,16 @@ export default function App() {
               )}
             </div>
 
+            <button
+              type="button"
+              onClick={handleOpenManualSale}
+              disabled={manualSaleSubmitting || Boolean(activePaymentRequestId)}
+              className="w-full mb-2 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/25 text-amber-700 dark:text-amber-300 font-extrabold text-xs hover:bg-amber-100 dark:hover:bg-amber-950/40 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+            >
+              <CreditCard className="w-4 h-4" />
+              <span>{isArabic ? 'بيع يدوي' : 'Manual Sale'}</span>
+            </button>
+
             {/* Primary Checkout Button */}
             <button
               onClick={handleCheckout}
@@ -3830,6 +4130,84 @@ export default function App() {
 
         </section>
       </main>
+
+      {/* Manual Card Sale */}
+      {showManualSaleModal && (
+        <div className="fixed inset-0 bg-black/50 z-[95] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" dir={isArabic ? 'rtl' : 'ltr'}>
+          <form onSubmit={handleManualSaleSubmit} className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-700">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-extrabold text-base text-slate-800 dark:text-white">{isArabic ? 'بيع يدوي' : 'Manual Card Sale'}</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{isArabic ? 'أدخل المبلغ واختر المجموعة الضريبية قبل الدفع على WisePOS E.' : 'Enter the amount and tax group before paying on WisePOS E.'}</p>
+                </div>
+                <CreditCard className="w-6 h-6 text-amber-500 shrink-0" />
+              </div>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-[11px] font-extrabold text-slate-500 dark:text-slate-400 mb-1.5">{isArabic ? 'المبلغ (EUR)' : 'Amount (EUR)'}</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={manualSaleAmountInput}
+                  onChange={(event) => setManualSaleAmountInput(event.target.value)}
+                  placeholder="0.00"
+                  maxLength={18}
+                  disabled={manualSaleSubmitting || Boolean(activeManualSale)}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3 text-lg font-extrabold text-slate-800 dark:text-white outline-none focus:border-amber-500 disabled:opacity-60"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-extrabold text-slate-500 dark:text-slate-400 mb-1.5">{isArabic ? 'الوصف (اختياري)' : 'Description (optional)'}</label>
+                <input
+                  type="text"
+                  value={manualSaleDescription}
+                  onChange={(event) => setManualSaleDescription(event.target.value)}
+                  maxLength={160}
+                  disabled={manualSaleSubmitting || Boolean(activeManualSale)}
+                  placeholder={isArabic ? 'مثال: طلب خاص' : 'Example: Special order'}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-2.5 text-sm font-bold text-slate-800 dark:text-white outline-none focus:border-amber-500 disabled:opacity-60"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-extrabold text-slate-500 dark:text-slate-400 mb-1.5">{isArabic ? 'المجموعة المحاسبية / الضريبة' : 'Accounting / VAT Group'}</label>
+                <select
+                  value={manualSaleAccountingGroupId}
+                  onChange={(event) => setManualSaleAccountingGroupId(event.target.value)}
+                  disabled={manualSaleSubmitting || Boolean(activeManualSale) || manualSaleAccountingGroups.length === 0}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2.5 text-sm font-bold text-slate-800 dark:text-white outline-none focus:border-amber-500 disabled:opacity-60"
+                >
+                  <option value="">{isArabic ? 'اختر المجموعة' : 'Select a group'}</option>
+                  {manualSaleAccountingGroups.map((group) => (
+                    <option key={group.id} value={group.id}>{group.name} · VAT {Number(group.vat_rate).toFixed(2)}%</option>
+                  ))}
+                </select>
+              </div>
+
+              {manualSaleError && <p className="text-xs font-bold text-rose-500">{manualSaleError}</p>}
+
+              {activeManualSale && !activePaymentRequestId ? (
+                <div className="space-y-2 pt-1">
+                  <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400">{isArabic ? 'الطلب محفوظ ويمكن إعادة المحاولة دون إنشاء طلب جديد.' : 'The order is saved and can be retried without creating another order.'}</p>
+                  <button type="button" onClick={handleRetryManualSale} disabled={manualSaleSubmitting} className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-extrabold text-xs">{isArabic ? 'إعادة محاولة البطاقة' : 'Retry Card'}</button>
+                  <button type="button" onClick={() => setShowManualSaleModal(false)} disabled={manualSaleSubmitting} className="w-full py-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-800 dark:text-white font-extrabold text-xs">{isArabic ? 'العودة إلى نقطة البيع' : 'Return to POS'}</button>
+                  <button type="button" onClick={handleCancelManualSale} disabled={manualSaleSubmitting} className="w-full py-2.5 rounded-xl bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 font-extrabold text-xs">{isArabic ? 'إلغاء البيع اليدوي' : 'Cancel Manual Sale'}</button>
+                </div>
+              ) : (
+                <div className="flex gap-2 pt-1">
+                  <button type="button" onClick={resetManualSaleForm} disabled={manualSaleSubmitting} className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-800 dark:text-white font-extrabold text-xs disabled:opacity-50">{isArabic ? 'إلغاء' : 'Cancel'}</button>
+                  <button type="submit" disabled={manualSaleSubmitting || !manualSaleAccountingGroupId} className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-extrabold text-xs">{manualSaleSubmitting ? (isArabic ? 'جاري الإنشاء...' : 'Creating...') : (isArabic ? 'الدفع على WisePOS E' : 'Pay on WisePOS E')}</button>
+                </div>
+              )}
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Modifiers Modal */}
       {activeProduct && (
