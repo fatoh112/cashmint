@@ -12,6 +12,7 @@ const webhookSource = read('../../supabase/functions/stripe-terminal-webhook/ind
 const manageSource = read('../../supabase/functions/manage-server-driven-reader/index.ts');
 const integrationSource = read('../admin/IntegrationSettings.jsx');
 const completionMigration = read('../../supabase/migrations/20260722121432_secure_server_driven_terminal_completion.sql');
+const staleReaderMigration = read('../../supabase/migrations/20260723160529_recover_stale_server_driven_reader_state.sql');
 
 describe('WisePOS E server-driven regression guards', () => {
   it('sends POS device credentials with server-driven operations', () => {
@@ -51,6 +52,21 @@ describe('WisePOS E server-driven regression guards', () => {
   it('cancel resolves a Stripe Reader ID, never a UUID column', () => {
     expect(cancelSource).toContain(".eq('stripe_reader_id', request.stripe_reader_id)");
     expect(cancelSource).not.toContain(".eq('id', request.stripe_reader_id)");
+  });
+
+  it('reconciles the Stripe Reader after cancellation instead of leaving a stale busy action', () => {
+    expect(cancelSource).toContain('syncServerDrivenReader');
+    expect(cancelSource).toContain('reader_release_pending');
+    expect(cancelSource).toContain("reader_cancel_action_failed");
+    expect(webhookSource).toContain('let cancellationError: string | null = null');
+    expect(webhookSource).toContain("reader_cancel_action_failed");
+    expect(webhookSource).toContain('const safeMessage = errorMessage(error)');
+  });
+
+  it('does not treat a stale stored WisePOS action as busy without an active payment request', () => {
+    expect(staleReaderMigration).toContain('pr.stripe_reader_id=v_reader.stripe_reader_id');
+    expect(staleReaderMigration).toContain("status IN('pending','claimed','creating_payment_intent','waiting_for_card','processing','cancel_requested','unknown')");
+    expect(staleReaderMigration).toContain('v_reader_has_active_payment');
   });
 
   it('retrieval uses the same trusted completion RPC as the webhook', () => {

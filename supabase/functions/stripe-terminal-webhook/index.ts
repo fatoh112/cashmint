@@ -5,6 +5,23 @@ const paymentRequestSelect = '*, restaurant_payment_configs(provider_config)'
 const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('')
 const constantTimeEqual = (a: string, b: string) => a.length === b.length && [...a].reduce((d, _, i) => d | (a.charCodeAt(i) ^ b.charCodeAt(i)), 0) === 0
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  if (error && typeof error === 'object') {
+    const value = error as { message?: unknown; code?: unknown; error?: { message?: unknown } }
+    if (typeof value.message === 'string') return value.message
+    if (typeof value.error?.message === 'string') return value.error.message
+    if (typeof value.code === 'string') return value.code
+  }
+  return 'Unknown Stripe webhook error'
+}
+
+function stripeTimestamp(value: unknown) {
+  const timestamp = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+}
+
 async function validStripeSignature(payload: string, signature: string | null) {
   const secret = Deno.env.get('STRIPE_TERMINAL_WEBHOOK_SECRET')
   if (!secret || !signature) return false
@@ -75,8 +92,14 @@ async function readAndSyncReader(db: ReturnType<typeof service>, request: Record
   if (!storedReader) throw new Error('Stored WisePOS E reader was not found')
 
   let reader = await stripeRequest(`/terminal/readers/${request.stripe_reader_id}`, config.provider_config ?? {})
+  let cancellationError: string | null = null
   if (cancelIfInProgress && reader.action?.status === 'in_progress') {
-    await stripeRequest(`/terminal/readers/${request.stripe_reader_id}/cancel_action`, config.provider_config ?? {}, { method: 'POST', body: '' }, `reader-webhook-cancel:${request.id}`)
+    try {
+      await stripeRequest(`/terminal/readers/${request.stripe_reader_id}/cancel_action`, config.provider_config ?? {}, { method: 'POST', body: '' }, `reader-webhook-cancel:${request.id}`)
+    } catch (error) {
+      // A final Reader action can make cancel_action reject; its subsequent Reader state is what we persist.
+      cancellationError = errorMessage(error)
+    }
     reader = await stripeRequest(`/terminal/readers/${request.stripe_reader_id}`, config.provider_config ?? {})
   }
 
@@ -86,10 +109,10 @@ async function readAndSyncReader(db: ReturnType<typeof service>, request: Record
       status: reader.status ?? null,
       action_status: action.status ?? 'idle',
       action_type: action.type ?? null,
-      last_seen_at: reader.last_seen_at ? new Date(Number(reader.last_seen_at)).toISOString() : null,
+      last_seen_at: stripeTimestamp(reader.last_seen_at),
       last_synced_at: new Date().toISOString(),
-      last_error_code: action.failure_code ?? null,
-      last_error_message: action.failure_message ?? null,
+      last_error_code: action.failure_code ?? (cancellationError ? 'reader_cancel_action_failed' : null),
+      last_error_message: action.failure_message ?? cancellationError,
       updated_at: new Date().toISOString(),
     })
     .eq('id', storedReader.id)
@@ -236,7 +259,7 @@ Deno.serve(async (req) => {
     await markProcessed(db, eventId)
     return json({ received: true })
   } catch (error) {
-    const safeMessage = error instanceof Error ? error.message : 'unknown'
+    const safeMessage = errorMessage(error)
     try {
       if (eventId) await service().rpc('mark_stripe_terminal_webhook_failed', { p_event_id: eventId, p_error: safeMessage })
     } catch (_) { /* preserve the original non-2xx response */ }
