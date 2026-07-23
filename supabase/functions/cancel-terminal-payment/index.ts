@@ -1,5 +1,7 @@
 import { authenticatedUser, corsHeaders, json, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
 
+const cancellableRequestStatuses = ['pending', 'claimed', 'creating_payment_intent', 'waiting_for_card', 'processing', 'unknown']
+
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error
@@ -62,11 +64,25 @@ Deno.serve(async (req) => {
       if (!authorized) throw new Error('Not allowed to cancel this payment')
     }
     if (request.status === 'succeeded') throw new Error('Succeeded payments cannot be cancelled by the client')
+    if (request.status === 'cancelled') return json({ status: 'cancelled', already_cancelled: true })
+    if (request.status === 'cancel_requested') return json({ status: 'cancel_requested', cancellation_pending: true })
     if (request.stripe_payment_intent_id) {
       const intent = await stripeRequest(`/payment_intents/${request.stripe_payment_intent_id}`, request.restaurant_payment_configs.provider_config ?? {})
       if (intent.status === 'succeeded') throw new Error('Succeeded payments cannot be cancelled by the client')
     }
-    await db.from('payment_requests').update({ status: 'cancel_requested', updated_at: new Date().toISOString() }).eq('id', request.id)
+    const { data: cancellationClaim, error: cancellationClaimError } = await db.from('payment_requests')
+      .update({ status: 'cancel_requested', updated_at: new Date().toISOString() })
+      .eq('id', request.id)
+      .in('status', cancellableRequestStatuses)
+      .select('id')
+      .maybeSingle()
+    if (cancellationClaimError) throw cancellationClaimError
+    if (!cancellationClaim) {
+      const { data: latest, error: latestError } = await db.from('payment_requests').select('status').eq('id', request.id).maybeSingle()
+      if (latestError) throw latestError
+      if (latest?.status === 'cancelled') return json({ status: 'cancelled', already_cancelled: true })
+      return json({ status: 'cancel_requested', cancellation_pending: true })
+    }
     let readerActionStatus: string | null = null
     let readerReleasePending = false
     if (request.provider_type === 'stripe_server_driven' && request.stripe_reader_id) {

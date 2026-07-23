@@ -596,6 +596,7 @@ export default function App() {
   const [activePaymentRequestId, setActivePaymentRequestId] = useState(null);
   const [stripeStatus, setStripeStatus] = useState('connecting'); // 'connecting', 'waiting_for_card', 'processing', 'success', 'failed'
   const [activePaymentProvider, setActivePaymentProvider] = useState('stripe_android_bridge');
+  const [isCancellingPayment, setIsCancellingPayment] = useState(false);
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
   const activePaymentOrderIdRef = useRef(null);
   const activePaymentOrderRef = useRef(null);
@@ -3675,6 +3676,8 @@ export default function App() {
             <div className="flex flex-col gap-2.5 pt-2">
               <button
                 onClick={async () => {
+                  if (isCancellingPayment) return;
+                  setIsCancellingPayment(true);
                   try {
                     const { data, error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
                     if (error) throw error;
@@ -3688,13 +3691,16 @@ export default function App() {
                   } catch (e) {
                     showNotification(e.message || 'Card payment cancellation failed', 'error');
                     return;
+                  } finally {
+                    setIsCancellingPayment(false);
                   }
                   showNotification('Card payment cancellation requested', 'info');
                 }}
                 aria-label={stripeStatus === 'failed' ? 'Close failed payment' : 'Cancel payment'}
-                className="w-full py-2.5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-600 dark:hover:bg-slate-500 text-slate-900 dark:text-white rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
+                disabled={isCancellingPayment}
+                className="w-full py-2.5 bg-slate-200 hover:bg-slate-300 disabled:opacity-60 dark:bg-slate-600 dark:hover:bg-slate-500 text-slate-900 dark:text-white rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
               >
-                {stripeStatus === 'failed' ? 'Close / Cancel Payment' : 'Cancel Payment'}
+                {isCancellingPayment ? 'Cancelling payment...' : stripeStatus === 'failed' ? 'Close / Cancel Payment' : 'Cancel Payment'}
               </button>
             </div>
           </div>

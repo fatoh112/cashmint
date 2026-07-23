@@ -72,6 +72,10 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(webhookSource).toContain('let cancellationError: string | null = null');
     expect(webhookSource).toContain("reader_cancel_action_failed");
     expect(webhookSource).toContain('const safeMessage = errorMessage(error)');
+    expect(cancelSource).toContain('cancellableRequestStatuses');
+    expect(cancelSource).toContain('cancellation_pending');
+    expect(appSource).toContain('isCancellingPayment');
+    expect(appSource).toContain('disabled={isCancellingPayment}');
   });
 
   it('does not treat a stale stored WisePOS action as busy without an active payment request', () => {
