@@ -1,4 +1,4 @@
-import { assertCardPaymentsCapability, corsHeaders, json, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
+import { assertCardPaymentsCapability, corsHeaders, json, readerActionPaymentIntentId, stripeRequest, terminalPaymentContext, validateSplitCardPaymentRequest } from '../_shared/terminal.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -8,8 +8,12 @@ Deno.serve(async (req) => {
     const { db, request } = await terminalPaymentContext(req, payment_request_id, input)
     if (request.provider_type !== 'stripe_server_driven' || request.status !== 'failed' || !request.stripe_payment_intent_id) throw new Error('Only failed server-driven payments with a reusable PaymentIntent can be retried')
     const config = request.restaurant_payment_configs
+    if (config.provider_type !== 'stripe_server_driven' || !config.is_enabled || !config.is_primary) throw new Error('Server-driven provider is not active for this request')
     await assertCardPaymentsCapability(config.provider_config ?? {})
+    await validateSplitCardPaymentRequest(db, request)
     const intent = await stripeRequest(`/payment_intents/${request.stripe_payment_intent_id}`, config.provider_config ?? {})
+    const expectedAmount = Number(request.amount_cents ?? Math.round(Number(request.orders.total_amount) * 100))
+    if (Number(intent.amount) !== expectedAmount || String(intent.currency).toLowerCase() !== String(config.currency ?? request.orders.currency).toLowerCase()) throw new Error('PaymentIntent amount or currency does not match the payment request')
     if (!['requires_payment_method', 'requires_confirmation'].includes(intent.status)) throw new Error('PaymentIntent cannot be retried')
 
     const { data: reader, error: readerError } = await db.from('stripe_terminal_readers')
@@ -20,8 +24,13 @@ Deno.serve(async (req) => {
       .maybeSingle()
     if (readerError || !reader) throw new Error('WisePOS E reader is unavailable')
     const fresh = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}`, config.provider_config ?? {})
-    if (fresh.status !== 'online' || fresh.action?.status === 'in_progress') throw new Error('WisePOS E reader is offline or busy')
+    if (fresh.status !== 'online') throw new Error('WisePOS E reader is offline or busy')
+    if (['in_progress', 'processing'].includes(fresh.action?.status)) {
+      if (readerActionPaymentIntentId(fresh) === intent.id) throw new Error('WisePOS E reader is already processing this PaymentIntent')
+      throw new Error('WisePOS E reader is busy with another payment')
+    }
     const action = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}/process_payment_intent`, config.provider_config ?? {}, { method: 'POST', body: new URLSearchParams({ payment_intent: intent.id, 'process_config[enable_customer_cancellation]': 'true' }) }, `reader-retry:${request.id}:${Number(request.process_attempt_count || 0) + 1}`)
+    if (readerActionPaymentIntentId(action) !== intent.id) throw new Error('WisePOS E returned an action for a different PaymentIntent')
     const actionId = action.action?.id ?? action.action?.process_payment_intent?.id ?? null
     const now = new Date().toISOString()
     const { error: requestUpdateError } = await db.from('payment_requests').update({

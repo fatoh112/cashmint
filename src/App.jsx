@@ -1567,7 +1567,8 @@ export default function App() {
             // Check if this matches our active stripe terminal transaction and payment has completed
             if (
               payload.new.status === 'completed' &&
-              payload.new.id === activePaymentOrderIdRef.current
+              payload.new.id === activePaymentOrderIdRef.current &&
+              !activeSplit
             ) {
               enqueueAutoReceiptPrint(payload.new);
 
@@ -1603,7 +1604,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(ordersSubscription);
     };
-  }, [deviceAuth, store, isArabic, enqueueAutoReceiptPrint]);
+  }, [deviceAuth, store, activeSplit, isArabic, enqueueAutoReceiptPrint]);
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
@@ -1636,6 +1637,38 @@ export default function App() {
       activePaymentRequestIdRef.current === requestId
       && terminalAttemptRef.current.paymentRequestId === requestId
     );
+    const verifySplitCompletion = async (request, orderId) => {
+      if (!activeSplit) return true;
+      if (!activeSplit.card_part_id || activeSplit.card_payment_request_id !== request.id || activeSplit.split_id == null) return false;
+      const [requestRead, partRead, splitRead, orderRead] = await Promise.all([
+        supabase.from('payment_requests').select('id,order_id,split_part_id,stripe_payment_intent_id,status').eq('id', request.id).maybeSingle(),
+        supabase.from('payment_split_parts').select('id,split_id,order_id,method,amount_cents,status,payment_id,provider_reference').eq('id', activeSplit.card_part_id).maybeSingle(),
+        supabase.from('payment_splits').select('id,order_id,status').eq('id', activeSplit.split_id).maybeSingle(),
+        supabase.from('orders').select('id,status').eq('id', orderId).maybeSingle(),
+      ]);
+      if (requestRead.error || partRead.error || splitRead.error || orderRead.error) return false;
+      const currentRequest = requestRead.data;
+      const cardPart = partRead.data;
+      const split = splitRead.data;
+      const order = orderRead.data;
+      return Boolean(
+        currentRequest?.id === request.id &&
+        currentRequest.order_id === orderId &&
+        currentRequest.split_part_id === activeSplit.card_part_id &&
+        currentRequest.status === 'succeeded' &&
+        currentRequest.stripe_payment_intent_id &&
+        cardPart?.split_id === activeSplit.split_id &&
+        cardPart.order_id === orderId &&
+        cardPart.method === 'card' &&
+        cardPart.status === 'succeeded' &&
+        cardPart.payment_id &&
+        cardPart.provider_reference === currentRequest.stripe_payment_intent_id &&
+        split?.id === activeSplit.split_id &&
+        split.order_id === orderId &&
+        split.status === 'succeeded' &&
+        order?.status === 'completed'
+      );
+    };
     const finalizeTerminalAttempt = createTerminalAttemptFinalizer({
       paymentRequestId,
       isCurrentAttempt,
@@ -1659,6 +1692,7 @@ export default function App() {
           setPendingTerminalOrder(null);
           setTerminalRecovery(null);
           setShowStripeModal(false);
+          setActiveSplit(null);
           activePaymentOrderRef.current = null;
           return;
         }
@@ -1704,6 +1738,16 @@ export default function App() {
       if (status === 'succeeded') {
         const orderId = activePaymentOrderIdRef.current || request.order_id;
         if (!orderId) return;
+        if (activeSplit) {
+          setStripeStatus('verifying_card');
+          const verifiedSplit = await verifySplitCompletion(request, orderId);
+          if (!isCurrentAttempt(paymentRequestId)) return;
+          if (!verifiedSplit) {
+            setShowStripeModal(true);
+            showNotification('Verifying card payment with Stripe...', 'info');
+            return;
+          }
+        }
         const requestSaysOrderCompleted = request.order_status === 'completed';
         const { data: completedOrder, error } = await supabase
           .from('orders')
@@ -2304,13 +2348,17 @@ export default function App() {
       activePaymentOrderRef.current = createdOrder;
       setActiveSplit({
         split_id: splitResult.split_id,
+        card_part_id: splitResult.card_part_id,
+        card_payment_request_id: splitResult.card_payment_request_id,
         order_id: createdOrder.id,
         cash_amount_cents: val.cashCents,
         card_amount_cents: val.cardCents,
         status: splitResult.status
       });
 
-      const providerType = terminalAvailability.providerType;
+      // Split checkout is gated above on the active WisePOS E configuration;
+      // start the exact request returned by create_split_payment.
+      const providerType = 'stripe_server_driven';
       activateTerminalAttempt({
         requestId: splitResult.card_payment_request_id,
         orderId: createdOrder.id,
@@ -2320,12 +2368,10 @@ export default function App() {
       });
       setShowSplitModal(false);
 
-      if (providerType === 'stripe_server_driven') {
-        const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
-          body: { payment_request_id: splitResult.card_payment_request_id, ...terminalDeviceCredentials() }
-        });
-        if (startError) throw startError;
-      }
+      const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
+        body: { payment_request_id: splitResult.card_payment_request_id, ...terminalDeviceCredentials() }
+      });
+      if (startError) throw startError;
 
     } catch (err) {
       console.error("SPLIT CHECKOUT ERROR:", err);
@@ -2467,6 +2513,13 @@ export default function App() {
       });
       if (error) throw error;
       const res = Array.isArray(data) ? data[0] : data;
+      if (!res?.card_payment_request_id || !res?.card_part_id) throw new Error('The retry request was not returned by the server.');
+      setActiveSplit(previous => ({
+        ...previous,
+        card_part_id: res.card_part_id,
+        card_payment_request_id: res.card_payment_request_id,
+        status: 'awaiting_card',
+      }));
       activateTerminalAttempt({
         requestId: res.card_payment_request_id,
         orderId: activePaymentOrderRef.current?.id || activeSplit.order_id,
@@ -2474,12 +2527,10 @@ export default function App() {
         status: 'pending',
         order: activePaymentOrderRef.current,
       });
-      if (activePaymentProvider === 'stripe_server_driven') {
-        const { error: retryError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
-          body: { payment_request_id: res.card_payment_request_id, ...terminalDeviceCredentials() },
-        });
-        if (retryError) throw retryError;
-      }
+      const { error: retryError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
+        body: { payment_request_id: res.card_payment_request_id, ...terminalDeviceCredentials() },
+      });
+      if (retryError) throw retryError;
     } catch (err) {
       showNotification(err.message || 'Retry card payment failed', 'error');
     }
@@ -3868,9 +3919,11 @@ export default function App() {
               <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
                 {terminalRecovery?.status === 'cancelled'
                   ? 'Payment cancelled'
-                  : terminalRecovery
-                    ? 'Card payment failed'
-                    : stripeStatus === 'succeeded'
+                    : terminalRecovery
+                      ? 'Card payment failed'
+                      : stripeStatus === 'verifying_card'
+                        ? 'Verifying card payment...'
+                      : stripeStatus === 'succeeded'
                       ? 'Payment Confirmed'
                       : stripeStatus === 'failed'
                         ? 'Payment Failed'
@@ -3881,6 +3934,8 @@ export default function App() {
                   ? (terminalRecovery.message || (terminalRecovery.status === 'cancelled' ? 'The customer cancelled the card payment. The unpaid order is still available.' : 'The card payment did not complete.'))
                   : stripeStatus === 'succeeded'
                     ? 'Closing the payment window now.'
+                    : stripeStatus === 'verifying_card'
+                      ? 'WisePOS E reported a result. Confirming the exact Stripe PaymentIntent and split records before completing the order.'
                     : stripeStatus === 'failed'
                       ? 'You can retry the card or close this payment.'
                       : activePaymentProvider === 'stripe_server_driven'

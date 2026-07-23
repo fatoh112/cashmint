@@ -16,6 +16,7 @@ const staleReaderMigration = read('../../supabase/migrations/20260723160529_reco
 const posAccessMigration = read('../../supabase/migrations/20260723163259_restore_terminal_rpc_pos_access.sql');
 const activePaymentMigration = read('../../supabase/migrations/20260723203259_expose_active_terminal_payment_to_pos.sql');
 const cancellationRecoveryMigration = read('../../supabase/migrations/20260723212748_fix_terminal_cancellation_recovery.sql');
+const splitTerminalVerificationMigration = read('../../supabase/migrations/20260724120000_fix_split_terminal_verification.sql');
 const terminalAttemptSource = read('./terminalAttempt.js');
 
 describe('WisePOS E server-driven regression guards', () => {
@@ -52,7 +53,7 @@ describe('WisePOS E server-driven regression guards', () => {
   it('releases an orphaned live Reader action only after confirming no active payment owns it', () => {
     expect(startSource).toContain('releaseOrphanedReaderAction');
     expect(startSource).toContain(".neq('id', request.id)");
-    expect(startSource).toContain(".in('status', activeRequestStatuses)");
+    expect(startSource).toContain(".in('status', activeTerminalRequestStatuses)");
     expect(startSource).toContain("staleIntent.status === 'succeeded'");
     expect(startSource).toContain('reader-orphan-recovery:${request.id}');
     expect(startSource).toContain("'WisePOS E reader did not release its previous action'");
@@ -267,6 +268,42 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(startSource).not.toContain('reader_action_id: action.id');
     expect(retrySource).toContain('const actionId = action.action?.id');
     expect(retrySource).not.toContain('reader_action_id:action.id');
+  });
+
+  it('validates and starts the exact split card request', () => {
+    expect(appSource).toContain('card_part_id: splitResult.card_part_id');
+    expect(appSource).toContain('card_payment_request_id: splitResult.card_payment_request_id');
+    expect(appSource).toContain("body: { payment_request_id: splitResult.card_payment_request_id, ...terminalDeviceCredentials() }");
+    expect(startSource).toContain('validateSplitCardPaymentRequest(db, request)');
+    expect(sharedSource).toContain("Number(part.amount_cents) !== Number(request.amount_cents)");
+    expect(startSource).toContain("metadata[split_part_id]");
+    expect(startSource).toContain('persistIntentError');
+    expect(startSource.indexOf('persistIntentError')).toBeLessThan(startSource.indexOf('process_payment_intent'));
+    expect(startSource).toContain('WisePOS E returned an action for a different PaymentIntent');
+    expect(retrySource).toContain('validateSplitCardPaymentRequest(db, request)');
+  });
+
+  it('requires verified accounting completion before split success reaches the POS', () => {
+    expect(appSource).toContain('verifySplitCompletion');
+    expect(appSource).toContain("setStripeStatus('verifying_card')");
+    expect(appSource).toContain("cardPart.status === 'succeeded'");
+    expect(appSource).toContain("split.status === 'succeeded'");
+    expect(appSource).toContain("order?.status === 'completed'");
+    expect(appSource).toContain('!activeSplit');
+    expect(retrieveSource).toContain('readerActionPaymentIntentId');
+    expect(retrieveSource).toContain("actionStatus = action.status ?? 'idle'");
+    expect(webhookSource).toContain("reader_action_status: 'idle'");
+  });
+
+  it('synchronizes unsuccessful terminal requests to their split parts transactionally', () => {
+    expect(splitTerminalVerificationMigration).toContain('sync_terminal_split_card_failure');
+    expect(splitTerminalVerificationMigration).toContain("v_part_status := CASE WHEN p_request_status = 'cancelled' THEN 'cancelled' ELSE 'failed' END");
+    expect(splitTerminalVerificationMigration).toContain("v_split_part.amount_cents <> v_request.amount_cents");
+    expect(splitTerminalVerificationMigration).toContain("v_split.status NOT IN ('awaiting_card', 'partially_paid')");
+    expect(splitTerminalVerificationMigration).toContain("status = 'succeeded' AND id <> v_split_part.id");
+    expect(cancelSource).toContain("db.rpc('sync_terminal_split_card_failure'");
+    expect(retrieveSource).toContain("db.rpc('sync_terminal_split_card_failure'");
+    expect(webhookSource).toContain("db.rpc('sync_terminal_split_card_failure'");
   });
 
   it('persists platform readers with a normalized null account scope', () => {

@@ -147,3 +147,70 @@ export function safeReader(reader: Record<string, unknown>) {
     metadata: reader.metadata ?? {},
   }
 }
+
+export const activeTerminalRequestStatuses = [
+  'pending', 'claimed', 'creating_payment_intent', 'waiting_for_card',
+  'processing', 'cancel_requested', 'unknown',
+]
+
+export const splitCardStartStatuses = ['awaiting_card', 'partially_paid']
+
+export function readerActionPaymentIntentId(reader: Record<string, any>) {
+  const action = reader.action && typeof reader.action === 'object' ? reader.action : {}
+  const paymentIntentId = action.process_payment_intent?.payment_intent ?? action.payment_intent
+  return typeof paymentIntentId === 'string' ? paymentIntentId : null
+}
+
+/**
+ * Split requests are intentionally validated from the service-role view of
+ * the database. The browser may supply the request id, but never the part,
+ * order, amount, or split status that authorizes the charge.
+ */
+export async function validateSplitCardPaymentRequest(
+  db: ReturnType<typeof service>,
+  request: Record<string, any>,
+  allowedSplitStatuses = splitCardStartStatuses,
+) {
+  if (!request.split_part_id) return null
+
+  const { data: part, error: partError } = await db.from('payment_split_parts')
+    .select('id,split_id,order_id,method,amount_cents,status,payment_id,provider_reference')
+    .eq('id', request.split_part_id)
+    .maybeSingle()
+  if (partError) throw partError
+  if (!part || part.order_id !== request.order_id) throw new Error('Split card part does not belong to this order')
+  if (part.method !== 'card') throw new Error('Payment request is not linked to a card split part')
+  if (Number(part.amount_cents) !== Number(request.amount_cents)) throw new Error('Split card amount does not match the payment request')
+  if (part.status !== 'pending') throw new Error('Split card part is no longer payable')
+
+  const { data: split, error: splitError } = await db.from('payment_splits')
+    .select('id,order_id,total_amount_cents,status')
+    .eq('id', part.split_id)
+    .maybeSingle()
+  if (splitError) throw splitError
+  if (!split || split.order_id !== request.order_id) throw new Error('Split record does not belong to this order')
+  if (!allowedSplitStatuses.includes(split.status)) throw new Error('Split payment is no longer awaiting a card payment')
+
+  const { data: succeededCard, error: succeededCardError } = await db.from('payment_split_parts')
+    .select('id')
+    .eq('split_id', split.id)
+    .eq('method', 'card')
+    .eq('status', 'succeeded')
+    .neq('id', part.id)
+    .limit(1)
+    .maybeSingle()
+  if (succeededCardError) throw succeededCardError
+  if (succeededCard) throw new Error('A card payment already succeeded for this split')
+
+  const { data: activeRequest, error: activeRequestError } = await db.from('payment_requests')
+    .select('id')
+    .eq('split_part_id', part.id)
+    .neq('id', request.id)
+    .in('status', activeTerminalRequestStatuses)
+    .limit(1)
+    .maybeSingle()
+  if (activeRequestError) throw activeRequestError
+  if (activeRequest) throw new Error('Another active payment request owns this split card part')
+
+  return { part, split }
+}

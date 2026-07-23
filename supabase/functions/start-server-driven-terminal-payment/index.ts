@@ -1,12 +1,4 @@
-import { assertCardPaymentsCapability, corsHeaders, json, safeReader, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
-
-const activeRequestStatuses = ['pending', 'claimed', 'creating_payment_intent', 'waiting_for_card', 'processing', 'cancel_requested', 'unknown']
-
-function actionPaymentIntentId(reader: Record<string, any>) {
-  const action = reader.action && typeof reader.action === 'object' ? reader.action : {}
-  const paymentIntentId = action.process_payment_intent?.payment_intent ?? action.payment_intent
-  return typeof paymentIntentId === 'string' ? paymentIntentId : null
-}
+import { activeTerminalRequestStatuses, assertCardPaymentsCapability, corsHeaders, json, readerActionPaymentIntentId, safeReader, service, stripeRequest, terminalPaymentContext, validateSplitCardPaymentRequest } from '../_shared/terminal.ts'
 
 async function releaseOrphanedReaderAction(
   db: ReturnType<typeof service>,
@@ -15,20 +7,41 @@ async function releaseOrphanedReaderAction(
   config: Record<string, any>,
   fresh: Record<string, any>,
 ) {
-  if (fresh.action?.status !== 'in_progress') return fresh
+  const actionStatus = fresh.action?.status
+  const terminalAction = ['succeeded', 'failed', 'canceled', 'cancelled'].includes(actionStatus)
+  if (terminalAction) {
+    const { error } = await db.from('stripe_terminal_readers').update({
+      status: fresh.status ?? null,
+      action_status: 'idle',
+      action_type: null,
+      last_seen_at: fresh.last_seen_at ? new Date(Number(fresh.last_seen_at)).toISOString() : null,
+      last_synced_at: new Date().toISOString(),
+      last_error_code: fresh.action?.failure_code ?? null,
+      last_error_message: fresh.action?.failure_message ?? null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', reader.id)
+    if (error) throw error
+    return { ...fresh, action: null }
+  }
+  if (!['in_progress', 'processing'].includes(actionStatus)) return fresh
+
+  const activeActionPaymentIntentId = readerActionPaymentIntentId(fresh)
+  if (request.stripe_payment_intent_id && activeActionPaymentIntentId === request.stripe_payment_intent_id) {
+    throw new Error('WisePOS E reader is already processing this PaymentIntent')
+  }
 
   const { data: activeRequest, error: activeRequestError } = await db.from('payment_requests')
     .select('id')
     .eq('location_id', request.location_id)
     .eq('stripe_reader_id', reader.stripe_reader_id)
     .neq('id', request.id)
-    .in('status', activeRequestStatuses)
+    .in('status', activeTerminalRequestStatuses)
     .gt('expires_at', new Date().toISOString())
     .maybeSingle()
   if (activeRequestError) throw activeRequestError
   if (activeRequest) throw new Error('WisePOS E reader is busy with another active payment')
 
-  const stalePaymentIntentId = actionPaymentIntentId(fresh)
+  const stalePaymentIntentId = activeActionPaymentIntentId
   if (stalePaymentIntentId) {
     const staleIntent = await stripeRequest(`/payment_intents/${stalePaymentIntentId}`, config.provider_config ?? {})
     if (staleIntent.status === 'succeeded') throw new Error('WisePOS E reader has a completed action awaiting Stripe reconciliation')
@@ -53,12 +66,16 @@ async function releaseOrphanedReaderAction(
     updated_at: new Date().toISOString(),
   }).eq('id', reader.id)
   if (readerUpdateError) throw readerUpdateError
-  if (recovered.action?.status === 'in_progress') throw new Error('WisePOS E reader did not release its previous action')
+  if (['in_progress', 'processing'].includes(recovered.action?.status)) throw new Error('WisePOS E reader did not release its previous action')
+  if (['succeeded', 'failed', 'canceled', 'cancelled'].includes(recovered.action?.status)) {
+    return { ...recovered, action: null }
+  }
   return recovered
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  let paymentAttemptStarted = false
   try {
     const input = await req.json()
     const { payment_request_id } = input
@@ -67,6 +84,7 @@ Deno.serve(async (req) => {
     if (request.provider_type !== 'stripe_server_driven' || config.provider_type !== 'stripe_server_driven' || !config.is_enabled || !config.is_primary) throw new Error('Server-driven provider is not active for this request')
     await assertCardPaymentsCapability(config.provider_config ?? {})
     if (!['pending', 'failed', 'unknown', 'waiting_for_card'].includes(request.status)) throw new Error('Payment request is not startable')
+    await validateSplitCardPaymentRequest(db, request)
 
     const { data: reader, error: readerError } = await db.from('stripe_terminal_readers')
       .select('*')
@@ -82,7 +100,9 @@ Deno.serve(async (req) => {
     if (fresh.location !== reader.stripe_location_id || fresh.status !== 'online') throw new Error('WisePOS E reader is offline or assigned to the wrong location')
     fresh = await releaseOrphanedReaderAction(db, request, reader, config, fresh)
 
-    const amount = Number(request.amount_cents ?? Math.round(Number(request.orders.total_amount) * 100))
+    const amount = request.split_part_id
+      ? Number(request.amount_cents)
+      : Number(request.amount_cents ?? Math.round(Number(request.orders.total_amount) * 100))
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error('Server payment amount is invalid')
     let intent: Record<string, any> = {}
     if (request.stripe_payment_intent_id) intent = await stripeRequest(`/payment_intents/${request.stripe_payment_intent_id}`, config.provider_config ?? {})
@@ -101,14 +121,29 @@ Deno.serve(async (req) => {
       if (request.split_part_id) body.set('metadata[split_part_id]', request.split_part_id)
       intent = await stripeRequest('/payment_intents', config.provider_config ?? {}, { method: 'POST', body }, `terminal-intent:${request.id}`)
     }
+    if (Number(intent.amount) !== amount || String(intent.currency).toLowerCase() !== String(config.currency ?? request.orders.currency).toLowerCase()) {
+      throw new Error('PaymentIntent amount or currency does not match the payment request')
+    }
     if (['succeeded', 'canceled'].includes(intent.status)) throw new Error('PaymentIntent is already final')
 
+    const now = new Date().toISOString()
+    if (!request.stripe_payment_intent_id) {
+      const { data: persistedRequest, error: persistIntentError } = await db.from('payment_requests').update({
+        stripe_payment_intent_id: intent.id,
+        status: 'creating_payment_intent',
+        last_reconciled_at: now,
+        updated_at: now,
+      }).eq('id', request.id).in('status', ['pending', 'failed', 'unknown', 'waiting_for_card']).select('id').maybeSingle()
+      if (persistIntentError) throw persistIntentError
+      if (!persistedRequest) throw new Error('Payment request changed before its PaymentIntent was persisted')
+    }
+
+    paymentAttemptStarted = true
     const actionBody = new URLSearchParams({ payment_intent: intent.id, 'process_config[enable_customer_cancellation]': 'true' })
     const action = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}/process_payment_intent`, config.provider_config ?? {}, { method: 'POST', body: actionBody }, `reader-action:${request.id}:${Number(request.process_attempt_count || 0) + 1}`)
+    if (readerActionPaymentIntentId(action) !== intent.id) throw new Error('WisePOS E returned an action for a different PaymentIntent')
     const actionId = action.action?.id ?? action.action?.process_payment_intent?.id ?? null
-    const now = new Date().toISOString()
     const { error: requestUpdateError } = await db.from('payment_requests').update({
-      stripe_payment_intent_id: intent.id,
       stripe_payment_intent_client_secret: null,
       stripe_reader_id: reader.stripe_reader_id,
       reader_action_id: actionId,
@@ -135,7 +170,7 @@ Deno.serve(async (req) => {
     return json({ payment_request_id: request.id, provider_type: request.provider_type, status: 'waiting_for_card', reader: safeReader({ ...fresh, action: action.action ?? fresh.action }) })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to start payment'
-    if (payment_request_id) {
+    if (payment_request_id && paymentAttemptStarted) {
       try {
         const db = service()
         await db.from('payment_requests').update({
@@ -145,6 +180,12 @@ Deno.serve(async (req) => {
           reader_action_status: 'failed',
           updated_at: new Date().toISOString(),
         }).eq('id', payment_request_id).in('status', ['pending', 'failed', 'unknown', 'waiting_for_card'])
+        await db.rpc('sync_terminal_split_card_failure', {
+          p_payment_request_id: payment_request_id,
+          p_request_status: 'failed',
+          p_failure_code: 'terminal_start_failed',
+          p_failure_message: message,
+        })
       } catch (recordError) {
         console.error('Failed to record terminal start failure', recordError)
       }

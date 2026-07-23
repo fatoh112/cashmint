@@ -1,4 +1,4 @@
-import { corsHeaders, json, paymentRequestForBridge, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
+import { corsHeaders, json, paymentRequestForBridge, readerActionPaymentIntentId, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
 
 // A confirmed decline/cancellation is terminal as well. Without `failed`
 // here, a later status poll could revive a failed request to waiting/processing
@@ -16,11 +16,15 @@ function stripeTime(value: unknown) {
 
 async function syncReaderState(db: ReturnType<typeof service>, request: Record<string, any>, config: Record<string, any>, reader: Record<string, any>) {
   if (!request.stripe_reader_id) return
-  const action = reader.action && typeof reader.action === 'object' ? reader.action : {}
+  const rawAction = reader.action && typeof reader.action === 'object' ? reader.action : {}
+  const actionMatchesRequest = readerActionPaymentIntentId(reader) === request.stripe_payment_intent_id
+  const actionIsTerminal = ['succeeded', 'failed', 'canceled', 'cancelled'].includes(rawAction.status)
+  const action = actionMatchesRequest && !actionIsTerminal ? rawAction : {}
+  const actionStatus = action.status ?? 'idle'
   const { error } = await db.from('stripe_terminal_readers')
     .update({
       status: reader.status ?? null,
-      action_status: action.status ?? 'idle',
+      action_status: actionStatus,
       action_type: action.type ?? null,
       last_seen_at: stripeTime(reader.last_seen_at),
       last_synced_at: new Date().toISOString(),
@@ -31,10 +35,22 @@ async function syncReaderState(db: ReturnType<typeof service>, request: Record<s
     .eq('stripe_reader_id', request.stripe_reader_id)
     .eq('payment_config_id', config.id)
   if (error) throw error
+  return actionStatus
 }
 
 async function updatePaymentRequest(db: ReturnType<typeof service>, requestId: string, values: Record<string, unknown>) {
   const { error } = await db.from('payment_requests').update(values).eq('id', requestId)
+  if (error) throw error
+}
+
+async function syncSplitFailure(db: ReturnType<typeof service>, request: Record<string, any>, status: 'failed' | 'cancelled' | 'expired', code: string | null, message: string | null) {
+  if (!request.split_part_id) return
+  const { error } = await db.rpc('sync_terminal_split_card_failure', {
+    p_payment_request_id: request.id,
+    p_request_status: status,
+    p_failure_code: code,
+    p_failure_message: message,
+  })
   if (error) throw error
 }
 
@@ -59,7 +75,12 @@ Deno.serve(async (req) => {
       const reader = request.stripe_reader_id
         ? await stripeRequest(`/terminal/readers/${request.stripe_reader_id}`, config.provider_config ?? {})
         : null
-      const readerActionStatus = reader?.action?.status ?? 'idle'
+      const readerActionIntentId = reader ? readerActionPaymentIntentId(reader) : null
+      const readerActionMatchesRequest = readerActionIntentId === request.stripe_payment_intent_id
+      const rawReaderActionStatus = reader?.action?.status ?? 'idle'
+      const readerActionStatus = readerActionMatchesRequest && !['succeeded', 'failed', 'canceled', 'cancelled'].includes(rawReaderActionStatus)
+        ? rawReaderActionStatus
+        : 'idle'
       const now = new Date().toISOString()
 
       if (intent.status === 'succeeded') {
@@ -92,6 +113,7 @@ Deno.serve(async (req) => {
             updated_at: now,
           })
         }
+        await syncSplitFailure(db, request, 'cancelled', intent.last_payment_error?.code ?? null, intent.last_payment_error?.message ?? 'Payment cancelled')
         if (reader) await syncReaderState(db, request, config, reader)
         return json({
           payment_request_id: request.id,
@@ -122,6 +144,7 @@ Deno.serve(async (req) => {
               updated_at: now,
             })
           }
+          await syncSplitFailure(db, request, 'failed', intent.last_payment_error?.code ?? reader?.action?.failure_code ?? 'payment_declined', intent.last_payment_error?.message ?? reader?.action?.failure_message ?? 'Payment declined')
           if (reader) await syncReaderState(db, request, config, reader)
           return json({ payment_request_id: request.id, status, payment_intent_id: intent.id, amount: intent.amount, currency: intent.currency, failure_code: null, failure_message: null, reader_status: reader?.status ?? null, reader_action_status: readerActionStatus })
         }

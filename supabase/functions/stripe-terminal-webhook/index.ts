@@ -1,4 +1,4 @@
-import { json, service, stripeRequest } from '../_shared/terminal.ts'
+import { json, readerActionPaymentIntentId, service, stripeRequest } from '../_shared/terminal.ts'
 
 const encoder = new TextEncoder()
 const paymentRequestSelect = '*, restaurant_payment_configs(id, provider_config)'
@@ -112,7 +112,7 @@ async function readAndSyncReader(db: ReturnType<typeof service>, request: Record
   if (!storedReader) throw new Error('Stored WisePOS E reader was not found')
 
   let reader = await stripeRequest(`/terminal/readers/${stripeReaderId}`, providerConfig ?? {})
-  if (cancelIfInProgress && reader.action?.status === 'in_progress') {
+  if (cancelIfInProgress && reader.action?.status === 'in_progress' && readerActionPaymentIntentId(reader) === request.stripe_payment_intent_id) {
     try {
       await stripeRequest(`/terminal/readers/${stripeReaderId}/cancel_action`, providerConfig ?? {}, { method: 'POST', body: '' }, `reader-webhook-cancel:${request.id}`)
     } catch (error) {
@@ -121,8 +121,10 @@ async function readAndSyncReader(db: ReturnType<typeof service>, request: Record
     reader = await stripeRequest(`/terminal/readers/${stripeReaderId}`, providerConfig ?? {})
   }
 
-  const action = reader.action && typeof reader.action === 'object' ? reader.action : {}
-  const actionIsActive = action.status === 'in_progress' || action.status === 'processing'
+  const rawAction = reader.action && typeof reader.action === 'object' ? reader.action : {}
+  const actionMatchesRequest = readerActionPaymentIntentId(reader) === request.stripe_payment_intent_id
+  const actionIsActive = actionMatchesRequest && (rawAction.status === 'in_progress' || rawAction.status === 'processing')
+  const action = actionIsActive ? rawAction : {}
   const { error: updateError } = await db.from('stripe_terminal_readers')
     .update({
       status: reader.status ?? null,
@@ -130,13 +132,19 @@ async function readAndSyncReader(db: ReturnType<typeof service>, request: Record
       action_type: actionIsActive ? action.type ?? null : null,
       last_seen_at: stripeTimestamp(reader.last_seen_at),
       last_synced_at: new Date().toISOString(),
-      last_error_code: action.failure_code ?? null,
-      last_error_message: action.failure_message ?? null,
+      last_error_code: actionIsActive ? rawAction.failure_code ?? null : null,
+      last_error_message: actionIsActive ? rawAction.failure_message ?? null : null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', storedReader.id)
   if (updateError) throw updateError
   return reader
+}
+
+function matchingReaderActionStatus(reader: Record<string, any> | null, request: Record<string, any>) {
+  if (!reader || readerActionPaymentIntentId(reader) !== request.stripe_payment_intent_id) return 'idle'
+  const status = reader.action?.status
+  return ['in_progress', 'processing'].includes(status) ? status : 'idle'
 }
 
 async function markProcessed(db: ReturnType<typeof service>, eventId: string) {
@@ -146,6 +154,17 @@ async function markProcessed(db: ReturnType<typeof service>, eventId: string) {
 
 async function updateRequestUnlessSucceeded(db: ReturnType<typeof service>, requestId: string, values: Record<string, unknown>) {
   const { error } = await db.from('payment_requests').update(values).eq('id', requestId).neq('status', 'succeeded')
+  if (error) throw error
+}
+
+async function syncSplitFailure(db: ReturnType<typeof service>, request: Record<string, any>, status: 'failed' | 'cancelled' | 'expired', code: string | null, message: string | null) {
+  if (!request.split_part_id) return
+  const { error } = await db.rpc('sync_terminal_split_card_failure', {
+    p_payment_request_id: request.id,
+    p_request_status: status,
+    p_failure_code: code,
+    p_failure_message: message,
+  })
   if (error) throw error
 }
 
@@ -197,6 +216,7 @@ Deno.serve(async (req) => {
         finalized_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
+      await syncSplitFailure(db, request, 'failed', object.action?.failure_code ?? 'reader_action_failed', object.action?.failure_message ?? 'Reader action failed')
       await readAndSyncReader(db, request, config, false)
       await markProcessed(db, eventId)
       return json({ received: true })
@@ -207,7 +227,8 @@ Deno.serve(async (req) => {
     if (type === 'terminal.reader.action_succeeded' && verified?.status !== 'succeeded') {
       await updateRequestUnlessSucceeded(db, request.id, {
         status: 'unknown',
-        reader_action_status: 'succeeded',
+        reader_action_status: 'idle',
+        reader_action_type: null,
         last_reconciled_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -236,12 +257,13 @@ Deno.serve(async (req) => {
         finalized_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
+      await syncSplitFailure(db, request, 'cancelled', verified.last_payment_error?.code ?? null, verified.last_payment_error?.message ?? 'Payment cancelled')
       await readAndSyncReader(db, request, config, true)
     } else if (verified.status === 'requires_payment_method') {
       const reader = request.provider_type === 'stripe_server_driven'
         ? await readAndSyncReader(db, request, config, false)
         : null
-      const readerActionStatus = reader?.action?.status ?? null
+      const readerActionStatus = matchingReaderActionStatus(reader, request)
       if (readerActionStatus === 'in_progress') {
         await updateRequestUnlessSucceeded(db, request.id, {
           status: ['waiting_for_card', 'processing'].includes(request.status) ? request.status : 'processing',
@@ -260,6 +282,7 @@ Deno.serve(async (req) => {
           finalized_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
+        await syncSplitFailure(db, request, 'failed', verified.last_payment_error?.code ?? reader?.action?.failure_code ?? 'payment_declined', verified.last_payment_error?.message ?? reader?.action?.failure_message ?? 'Payment declined')
       } else {
         await updateRequestUnlessSucceeded(db, request.id, {
           status: ['waiting_for_card', 'processing'].includes(request.status) ? request.status : 'processing',

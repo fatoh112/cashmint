@@ -1,4 +1,4 @@
-import { authenticatedUser, corsHeaders, json, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
+import { authenticatedUser, corsHeaders, json, readerActionPaymentIntentId, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
 
 const cancellableRequestStatuses = ['pending', 'claimed', 'creating_payment_intent', 'waiting_for_card', 'processing', 'unknown']
 
@@ -24,9 +24,12 @@ async function syncServerDrivenReader(
   reader: Record<string, any>,
   providerConfig: Record<string, unknown>,
   cancellationError: string | null,
+  expectedPaymentIntentId: string | null,
 ) {
   const fresh = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}`, providerConfig)
-  const action = fresh.action && typeof fresh.action === 'object' ? fresh.action : {}
+  const rawAction = fresh.action && typeof fresh.action === 'object' ? fresh.action : {}
+  const actionMatchesRequest = Boolean(expectedPaymentIntentId) && readerActionPaymentIntentId(fresh) === expectedPaymentIntentId
+  const action = actionMatchesRequest && ['in_progress', 'processing'].includes(rawAction.status) ? rawAction : {}
   const { error } = await db.from('stripe_terminal_readers').update({
     status: fresh.status ?? null,
     action_status: action.status ?? 'idle',
@@ -96,7 +99,7 @@ Deno.serve(async (req) => {
           // Stripe can reject this when the action already reached a final state. Fetching the Reader below is authoritative.
           cancellationError = errorMessage(error)
         }
-        readerActionStatus = await syncServerDrivenReader(db, reader, request.restaurant_payment_configs.provider_config ?? {}, cancellationError)
+        readerActionStatus = await syncServerDrivenReader(db, reader, request.restaurant_payment_configs.provider_config ?? {}, cancellationError, request.stripe_payment_intent_id)
         readerReleasePending = ['in_progress', 'processing'].includes(readerActionStatus)
       }
     }
@@ -105,6 +108,15 @@ Deno.serve(async (req) => {
       if (intent.status !== 'canceled') await stripeRequest(`/payment_intents/${request.stripe_payment_intent_id}/cancel`, request.restaurant_payment_configs.provider_config ?? {}, { method: 'POST', body: '' }, `cancel:${request.id}`)
     }
     await db.from('payment_requests').update({ status: 'cancelled', reader_action_status: readerActionStatus, failure_code: null, failure_message: null, finalized_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', request.id).neq('status', 'succeeded')
+    if (request.split_part_id) {
+      const { error: splitSyncError } = await db.rpc('sync_terminal_split_card_failure', {
+        p_payment_request_id: request.id,
+        p_request_status: 'cancelled',
+        p_failure_code: null,
+        p_failure_message: 'Payment cancelled',
+      })
+      if (splitSyncError) throw splitSyncError
+    }
     if (request.claimed_by_device_id) {
       await db.from('terminal_devices').update({ current_payment_request_id: null, reader_action_status: 'cancelling', updated_at: new Date().toISOString() }).eq('id', request.claimed_by_device_id)
     }
