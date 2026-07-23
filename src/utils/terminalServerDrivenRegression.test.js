@@ -15,14 +15,17 @@ const completionMigration = read('../../supabase/migrations/20260722121432_secur
 const staleReaderMigration = read('../../supabase/migrations/20260723160529_recover_stale_server_driven_reader_state.sql');
 const posAccessMigration = read('../../supabase/migrations/20260723163259_restore_terminal_rpc_pos_access.sql');
 const activePaymentMigration = read('../../supabase/migrations/20260723203259_expose_active_terminal_payment_to_pos.sql');
+const cancellationRecoveryMigration = read('../../supabase/migrations/20260723212748_fix_terminal_cancellation_recovery.sql');
+const terminalAttemptSource = read('./terminalAttempt.js');
 
 describe('WisePOS E server-driven regression guards', () => {
   it('sends POS device credentials with server-driven operations', () => {
     expect(appSource).toContain('pos_device_id: deviceAuth?.deviceId || localStorage.getItem(\'device_id\') || null');
     expect(appSource).toContain('pos_device_token: localStorage.getItem(\'device_token\') || null');
     expect(appSource).toContain('retrieve-terminal-payment-status');
-    expect(appSource).toContain('retry-server-driven-terminal-payment');
+    expect(appSource).toContain('start-server-driven-terminal-payment');
     expect(appSource).toContain('cancel-terminal-payment');
+    expect(appSource).toContain("supabase.rpc('request_terminal_card_payment'");
   });
 
   it('does not send browser-supplied store identity to the Edge Functions', () => {
@@ -75,7 +78,23 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(cancelSource).toContain('cancellableRequestStatuses');
     expect(cancelSource).toContain('cancellation_pending');
     expect(appSource).toContain('isCancellingPayment');
-    expect(appSource).toContain('disabled={isCancellingPayment}');
+    expect(appSource).toContain('disabled={isCancellingPayment || !activePaymentRequestId}');
+  });
+
+  it('finalizes a terminal attempt once and clears polling, Realtime, and POS loading state', () => {
+    expect(appSource).toContain('createTerminalAttemptFinalizer');
+    expect(appSource).toContain('clearPolling');
+    expect(appSource).toContain('removeRealtime');
+    expect(appSource).toContain('checkoutInFlightRef.current = false');
+    expect(appSource).toContain('setIsSubmittingSplit(false)');
+    expect(terminalAttemptSource).toContain('let finalized = false');
+  });
+
+  it('normalizes every final cancellation spelling and keeps the old request immutable', () => {
+    expect(terminalAttemptSource).toContain("'payment_intent.canceled'");
+    expect(cancellationRecoveryMigration).toContain("status IN ('pending','claimed','creating_payment_intent','waiting_for_card','processing','cancel_requested','unknown')");
+    expect(cancellationRecoveryMigration).toContain("':attempt:'");
+    expect(cancellationRecoveryMigration).toContain('complete_pending_order_in_cash');
   });
 
   it('does not treat a stale stored WisePOS action as busy without an active payment request', () => {
@@ -217,7 +236,14 @@ describe('WisePOS E server-driven regression guards', () => {
   it('deduplicates receipt jobs by order ID so trusted completion prints once', () => {
     expect(appSource).toContain('autoPrintJobsRef.current.get(orderKey)');
     expect(appSource).toContain('recordOrderReceiptPrinted(order.id)');
-    expect(appSource).toContain('enqueueAutoReceiptPrint({ ...receiptOrder, status: \'completed\' })');
+    expect(appSource).toContain('enqueueAutoReceiptPrint({ ...recoveryOrder, status: \'completed\' })');
+  });
+
+  it('keeps recovery actions on the existing pending order', () => {
+    expect(appSource).toContain('handleRetryPendingCard');
+    expect(appSource).toContain('handlePayPendingOrderInCash');
+    expect(appSource).toContain('handleCancelPendingOrder');
+    expect(appSource).toContain("p_order_id: pending.orderId");
   });
 
   it('stores Stripe action IDs separately from the Stripe Reader ID', () => {

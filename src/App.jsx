@@ -5,6 +5,7 @@ import Login from './Login';
 import { printReceipt } from './utils/printerService';
 import { calculateOrderAccounting } from './utils/taxCalculator';
 import { validateSplitAmounts, calculateFiftyFiftySplit, toCents, fromCents } from './utils/splitPaymentUtils';
+import { createTerminalAttemptFinalizer, isFinalTerminalStatus, normalizeTerminalStatus } from './utils/terminalAttempt';
 import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
 import PrintingDiagnosticsModal from './components/admin/PrintingDiagnosticsModal';
@@ -38,6 +39,12 @@ console.log("MODE AUDIT", {
 
 
 const isStoreOnboarded = (store) => Boolean(store?.onboarding_completed && store?.onboarding_status === 'completed');
+
+const terminalCartFingerprint = (items) => JSON.stringify((items || []).map(item => ({
+  productId: item.product?.id || null,
+  quantity: item.quantity,
+  modifiers: (item.selectedModifiers || []).map(modifier => ({ id: modifier.id, price: modifier.price_adjustment })).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+})))
 
 // Lazy load onboarding wizard, superadmin, and landing page components for build-time tree-shaking
 const OnboardingWizard = React.lazy(() => import('./components/OnboardingWizard'));
@@ -597,24 +604,46 @@ export default function App() {
   const [stripeStatus, setStripeStatus] = useState('connecting'); // 'connecting', 'waiting_for_card', 'processing', 'success', 'failed'
   const [activePaymentProvider, setActivePaymentProvider] = useState('stripe_android_bridge');
   const [isCancellingPayment, setIsCancellingPayment] = useState(false);
+  const [terminalRecovery, setTerminalRecovery] = useState(null);
+  const [pendingTerminalOrder, setPendingTerminalOrder] = useState(null);
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
+  const activePaymentRequestIdRef = useRef(null);
   const activePaymentOrderIdRef = useRef(null);
   const activePaymentOrderRef = useRef(null);
+  const terminalAttemptRef = useRef({ paymentRequestId: null, generation: 0 });
   const activePaymentUnknownNoticeRef = useRef(false);
   const checkoutInFlightRef = useRef(false);
   const autoPrintJobsRef = useRef(new Map());
   const autoPrintQueueRef = useRef(Promise.resolve());
 
-  const resumeActiveTerminalPayment = useCallback((availability) => {
-    const requestId = availability?.active_payment_request_id;
+  const activateTerminalAttempt = useCallback(({ requestId, orderId, provider, status, order }) => {
     if (!requestId) return false;
-    setActivePaymentOrderId(availability.active_payment_order_id || null);
+    terminalAttemptRef.current = {
+      paymentRequestId: requestId,
+      generation: terminalAttemptRef.current.generation + 1,
+    };
+    activePaymentRequestIdRef.current = requestId;
+    activePaymentOrderIdRef.current = orderId || null;
+    if (order) activePaymentOrderRef.current = order;
+    setTerminalRecovery(null);
+    setActivePaymentOrderId(orderId || null);
     setActivePaymentRequestId(requestId);
-    setActivePaymentProvider(availability.provider_type || 'stripe_android_bridge');
-    setStripeStatus(availability.active_payment_status || 'waiting_for_card');
+    setActivePaymentProvider(provider || 'stripe_android_bridge');
+    setStripeStatus(status || 'waiting_for_card');
     setShowStripeModal(true);
     return true;
   }, []);
+
+  const resumeActiveTerminalPayment = useCallback((availability) => {
+    const requestId = availability?.active_payment_request_id;
+    if (!requestId) return false;
+    return activateTerminalAttempt({
+      requestId,
+      orderId: availability.active_payment_order_id || null,
+      provider: availability.provider_type,
+      status: availability.active_payment_status || 'waiting_for_card',
+    });
+  }, [activateTerminalAttempt]);
 
   // Split Payment states
   const [showSplitModal, setShowSplitModal] = useState(false);
@@ -1547,8 +1576,12 @@ export default function App() {
               }
               setCart([]);
               setShowStripeModal(false);
+              activePaymentRequestIdRef.current = null;
+              terminalAttemptRef.current = { paymentRequestId: null, generation: terminalAttemptRef.current.generation + 1 };
               setActivePaymentOrderId(null);
               setActivePaymentRequestId(null);
+              setPendingTerminalOrder(null);
+              setTerminalRecovery(null);
               activePaymentOrderRef.current = null;
               showNotification(isArabic ? "تم إكمال دفع Stripe بنجاح! 🚀" : "Stripe payment successfully completed! 🚀");
 
@@ -1574,12 +1607,101 @@ export default function App() {
 
   useEffect(() => {
     if (!activePaymentRequestId) return;
+    const paymentRequestId = activePaymentRequestId;
+    if (terminalAttemptRef.current.paymentRequestId !== paymentRequestId) {
+      terminalAttemptRef.current = {
+        paymentRequestId,
+        generation: terminalAttemptRef.current.generation + 1,
+      };
+    }
+    activePaymentRequestIdRef.current = paymentRequestId;
     activePaymentUnknownNoticeRef.current = false;
-    let finalized = false;
+    let poll = null;
+    let channel = null;
+    let pollInFlight = false;
+
+    const clearPolling = () => {
+      if (poll) {
+        clearInterval(poll);
+        poll = null;
+      }
+    };
+    const removeRealtime = () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+        channel = null;
+      }
+    };
+    const isCurrentAttempt = (requestId) => (
+      activePaymentRequestIdRef.current === requestId
+      && terminalAttemptRef.current.paymentRequestId === requestId
+    );
+    const finalizeTerminalAttempt = createTerminalAttemptFinalizer({
+      paymentRequestId,
+      isCurrentAttempt,
+      clearPolling,
+      removeRealtime,
+      resetState: ({ finalStatus, outcome, orderId, receiptOrder, message }) => {
+        const recoveryOrder = receiptOrder || activePaymentOrderRef.current || (orderId ? { id: orderId } : null);
+        activePaymentRequestIdRef.current = null;
+        activePaymentOrderIdRef.current = null;
+        setActivePaymentRequestId(null);
+        setActivePaymentOrderId(null);
+        setIsCancellingPayment(false);
+        checkoutInFlightRef.current = false;
+        setIsSubmittingSplit(false);
+        setStripeStatus(finalStatus);
+
+        if (outcome === 'success') {
+          if (recoveryOrder) enqueueAutoReceiptPrint({ ...recoveryOrder, status: 'completed' });
+          if (localStorage.getItem('order_complete_sound_enabled') === 'true') playChime();
+          setCart([]);
+          setPendingTerminalOrder(null);
+          setTerminalRecovery(null);
+          setShowStripeModal(false);
+          activePaymentOrderRef.current = null;
+          return;
+        }
+
+        if (activeSplit) {
+          // The split recovery surface owns its own actions and keeps the
+          // partially-paid order available for retry or cash completion.
+          setShowStripeModal(false);
+          return;
+        }
+
+        if (recoveryOrder?.id) {
+          setPendingTerminalOrder(previous => previous || {
+            orderId: recoveryOrder.id,
+            order: recoveryOrder,
+            cartFingerprint: terminalCartFingerprint(cart),
+          });
+          setTerminalRecovery({
+            paymentRequestId,
+            orderId: recoveryOrder.id,
+            order: recoveryOrder,
+            provider: activePaymentProvider,
+            status: finalStatus,
+            message: message || (finalStatus === 'cancelled' ? 'Payment cancelled' : 'Card payment could not be confirmed'),
+          });
+          activePaymentOrderRef.current = recoveryOrder;
+        }
+        setShowStripeModal(true);
+      },
+      showResult: ({ outcome, message, finalStatus }) => {
+        if (outcome === 'success') {
+          showNotification('Stripe payment successfully completed!');
+        } else {
+          showNotification(message || (finalStatus === 'cancelled' ? 'Payment cancelled' : 'Card payment could not be confirmed'), 'error');
+        }
+      },
+    });
+
     const handlePaymentRequestUpdate = async (request) => {
-      if (!request || finalized) return;
-      setStripeStatus(request.status);
-      if (request.status === 'succeeded') {
+      if (!request || !isCurrentAttempt(paymentRequestId)) return;
+      const status = normalizeTerminalStatus(request.status);
+      setStripeStatus(status);
+      if (status === 'succeeded') {
         const orderId = activePaymentOrderIdRef.current || request.order_id;
         if (!orderId) return;
         const requestSaysOrderCompleted = request.order_status === 'completed';
@@ -1596,25 +1718,15 @@ export default function App() {
           showNotification('Payment confirmed, waiting for the server to complete the order.', 'info');
           return;
         }
-        finalized = true;
-        activePaymentOrderIdRef.current = null;
-        setShowStripeModal(false);
-        const receiptOrder = completedOrder || activePaymentOrderRef.current;
-        if (receiptOrder) {
-          enqueueAutoReceiptPrint({ ...receiptOrder, status: 'completed' });
-        }
-
-        if (localStorage.getItem('order_complete_sound_enabled') === 'true') {
-          playChime();
-        }
-        setCart([]);
-        setActivePaymentOrderId(null);
-        setActivePaymentRequestId(null);
-        activePaymentOrderRef.current = null;
-        showNotification('Stripe payment successfully completed!');
+        finalizeTerminalAttempt({
+          finalStatus: 'succeeded',
+          outcome: 'success',
+          orderId,
+          receiptOrder: completedOrder || activePaymentOrderRef.current,
+        });
         return;
       }
-      if (request.status === 'unknown') {
+      if (status === 'unknown') {
         setShowStripeModal(true);
         if (!activePaymentUnknownNoticeRef.current) {
           activePaymentUnknownNoticeRef.current = true;
@@ -1622,53 +1734,65 @@ export default function App() {
         }
         return;
       }
-      if (['failed', 'cancelled', 'expired'].includes(request.status)) {
-        finalized = true;
-        showNotification(request.failure_message || 'Card payment could not be confirmed', 'error');
-        setShowStripeModal(true);
+      if (isFinalTerminalStatus(status)) {
+        finalizeTerminalAttempt({
+          finalStatus: status,
+          orderId: activePaymentOrderIdRef.current || request.order_id,
+          message: request.failure_message || (status === 'cancelled' ? 'Payment cancelled' : 'Card payment could not be confirmed'),
+        });
       }
     };
-    const channel = supabase.channel(`terminal-payment-${activePaymentRequestId}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${activePaymentRequestId}` }, ({ new: request }) => {
+
+    channel = supabase.channel(`terminal-payment-${paymentRequestId}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'payment_requests', filter: `id=eq.${paymentRequestId}` }, ({ new: request }) => {
         handlePaymentRequestUpdate(request);
       }).subscribe();
+
     const pollPaymentResult = async () => {
-      if (finalized) return;
-      const posDeviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
-      const { data, error } = await supabase.rpc('terminal_payment_result_for_pos', {
-        p_payment_request_id: activePaymentRequestId,
-        p_pos_device_id: posDeviceId
-      });
-      if (activePaymentProvider === 'stripe_server_driven') {
-        const { data: serverStatus, error: serverStatusError } = await supabase.functions.invoke('retrieve-terminal-payment-status', {
-          body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() },
+      if (pollInFlight || !isCurrentAttempt(paymentRequestId)) return;
+      pollInFlight = true;
+      try {
+        const posDeviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
+        const { data, error } = await supabase.rpc('terminal_payment_result_for_pos', {
+          p_payment_request_id: paymentRequestId,
+          p_pos_device_id: posDeviceId
         });
-        if (!serverStatusError && serverStatus) {
+        if (activePaymentProvider === 'stripe_server_driven' && isCurrentAttempt(paymentRequestId)) {
+          const { data: serverStatus, error: serverStatusError } = await supabase.functions.invoke('retrieve-terminal-payment-status', {
+            body: { payment_request_id: paymentRequestId, ...terminalDeviceCredentials() },
+          });
+          if (!serverStatusError && serverStatus) {
+            await handlePaymentRequestUpdate({
+              id: paymentRequestId,
+              status: serverStatus.status === 'succeeded' ? 'succeeded' : serverStatus.status === 'requires_payment_method' ? 'failed' : serverStatus.status,
+              order_id: activePaymentOrderIdRef.current,
+              failure_code: serverStatus.failure_code,
+              failure_message: serverStatus.failure_message,
+            });
+          }
+        }
+        const result = Array.isArray(data) ? data[0] : data;
+        if (!error && result) {
           await handlePaymentRequestUpdate({
-            id: activePaymentRequestId,
-            status: serverStatus.status === 'succeeded' ? 'succeeded' : serverStatus.status === 'requires_payment_method' ? 'failed' : serverStatus.status,
-            order_id: activePaymentOrderId,
-            failure_code: serverStatus.failure_code,
-            failure_message: serverStatus.failure_message,
+            id: result.payment_request_id,
+            status: result.request_status,
+            order_id: result.order_id,
+            order_status: result.order_status,
+            failure_code: result.failure_code,
+            failure_message: result.failure_message
           });
         }
-      }
-      const result = Array.isArray(data) ? data[0] : data;
-      if (!error && result) {
-        await handlePaymentRequestUpdate({
-          id: result.payment_request_id,
-          status: result.request_status,
-          order_id: result.order_id,
-          order_status: result.order_status,
-          failure_code: result.failure_code,
-          failure_message: result.failure_message
-        });
+      } finally {
+        pollInFlight = false;
       }
     };
     pollPaymentResult();
-    const poll = setInterval(pollPaymentResult, 2500);
-    return () => { clearInterval(poll); supabase.removeChannel(channel); };
-  }, [activePaymentRequestId, activePaymentProvider, activePaymentOrderId, isArabic, deviceAuth?.deviceId, enqueueAutoReceiptPrint]);
+    poll = setInterval(pollPaymentResult, 2500);
+    return () => {
+      clearPolling();
+      removeRealtime();
+    };
+  }, [activePaymentRequestId, activePaymentProvider, activeSplit, deviceAuth?.deviceId, enqueueAutoReceiptPrint, isArabic, showNotification, cart]);
 
 
   // Filtered Products
@@ -1883,6 +2007,15 @@ export default function App() {
       showNotification(taxConfigurationError.message, 'error');
       return;
     }
+    if (terminalRecovery) {
+      if (paymentMethod === 'cash') {
+        await handlePayPendingOrderInCash();
+      } else {
+        setShowStripeModal(true);
+        showNotification('This cart already has a pending order. Retry the existing card payment or choose cash.', 'info');
+      }
+      return;
+    }
     if (checkoutInFlightRef.current || activePaymentRequestId) {
       showNotification(isArabic ? 'A card payment is already in progress.' : 'A card payment is already in progress.', 'info');
       return;
@@ -1996,11 +2129,18 @@ export default function App() {
         paymentRequestCreated = true;
         const providerType = paymentRequest.provider_type || terminalAvailability.providerType || 'stripe_android_bridge';
         activePaymentOrderRef.current = printableOrder;
-        setActivePaymentOrderId(createdOrder.id);
-        setActivePaymentRequestId(paymentRequest.id);
-        setActivePaymentProvider(providerType);
-        setShowStripeModal(true);
-        setStripeStatus(paymentRequest.status || 'pending');
+        setPendingTerminalOrder({
+          orderId: createdOrder.id,
+          order: printableOrder,
+          cartFingerprint: terminalCartFingerprint(cart),
+        });
+        activateTerminalAttempt({
+          requestId: paymentRequest.id,
+          orderId: createdOrder.id,
+          provider: providerType,
+          status: paymentRequest.status || 'pending',
+          order: printableOrder,
+        });
 
         if (providerType === 'stripe_server_driven') {
           const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', { body: { payment_request_id: paymentRequest.id, ...terminalDeviceCredentials() } });
@@ -2162,8 +2302,6 @@ export default function App() {
       if (!splitCreated) throw new Error('The split payment request was not returned by the server.');
 
       activePaymentOrderRef.current = createdOrder;
-      setActivePaymentOrderId(createdOrder.id);
-      setActivePaymentRequestId(splitResult.card_payment_request_id);
       setActiveSplit({
         split_id: splitResult.split_id,
         order_id: createdOrder.id,
@@ -2173,10 +2311,14 @@ export default function App() {
       });
 
       const providerType = terminalAvailability.providerType;
-      setActivePaymentProvider(providerType);
+      activateTerminalAttempt({
+        requestId: splitResult.card_payment_request_id,
+        orderId: createdOrder.id,
+        provider: providerType,
+        status: 'pending',
+        order: createdOrder,
+      });
       setShowSplitModal(false);
-      setShowStripeModal(true);
-      setStripeStatus('pending');
 
       if (providerType === 'stripe_server_driven') {
         const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
@@ -2206,6 +2348,114 @@ export default function App() {
     }
   };
 
+  const getReusablePendingTerminalOrder = () => {
+    const pending = pendingTerminalOrder || terminalRecovery;
+    if (!pending?.orderId) return null;
+    const fingerprint = pending.cartFingerprint || terminalCartFingerprint(cart);
+    if (fingerprint !== terminalCartFingerprint(cart)) {
+      showNotification('The cart changed after the card cancellation. Cancel the old order before starting a different cart.', 'error');
+      return null;
+    }
+    return pending;
+  };
+
+  const handleRetryPendingCard = async () => {
+    const pending = getReusablePendingTerminalOrder();
+    if (!pending) return;
+    try {
+      checkoutInFlightRef.current = true;
+      showNotification(isArabic ? 'Ø¬Ø§Ø±ÙŠ Ø¥Ø¹Ø§Ø¯Ø© Ù…Ø­Ø§ÙˆÙ„Ø© Ø§Ù„Ø¨Ø·Ø§Ù‚Ø©...' : 'Retrying card payment...', 'info');
+      const { data, error } = await supabase.rpc('request_terminal_card_payment', {
+        p_order_id: pending.orderId,
+        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null,
+      });
+      if (error) throw error;
+      const nextRequest = Array.isArray(data) ? data[0] : data;
+      if (!nextRequest?.id) throw new Error('Card payment retry was not accepted.');
+      const provider = nextRequest.provider_type || pending.provider || activePaymentProvider;
+      activateTerminalAttempt({
+        requestId: nextRequest.id,
+        orderId: pending.orderId,
+        provider,
+        status: nextRequest.status || 'pending',
+        order: pending.order || activePaymentOrderRef.current,
+      });
+      if (provider === 'stripe_server_driven') {
+        const { error: startError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
+          body: { payment_request_id: nextRequest.id, ...terminalDeviceCredentials() },
+        });
+        if (startError) throw startError;
+      }
+    } catch (err) {
+      showNotification(err.message || 'Retry card payment failed', 'error');
+    } finally {
+      checkoutInFlightRef.current = false;
+    }
+  };
+
+  const handlePayPendingOrderInCash = async () => {
+    const pending = getReusablePendingTerminalOrder();
+    if (!pending) return;
+    try {
+      checkoutInFlightRef.current = true;
+      showNotification(isArabic ? 'Ø¬Ø§Ø±ÙŠ ØªØ­ÙˆÙŠÙ„ Ø§Ù„Ø·Ù„Ø¨ Ø§Ù„Ù…ÙˆØ¬ÙˆØ¯ Ø¥Ù„Ù‰ Ø§Ù„Ù†Ù‚Ø¯...' : 'Switching the existing order to cash...', 'info');
+      const { data, error } = await supabase.rpc('complete_pending_order_in_cash', {
+        p_order_id: pending.orderId,
+        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null,
+      });
+      if (error) throw error;
+      const completedOrder = Array.isArray(data) ? data[0] : data;
+      const printableOrder = { ...(pending.order || {}), ...(completedOrder || {}), status: 'completed' };
+      enqueueAutoReceiptPrint(printableOrder);
+      if (orderCompleteSoundEnabled) playChime();
+      setActiveCashierSession(prev => prev ? {
+        ...prev,
+        cashBalance: Number(prev.cashBalance || 0) + Number(completedOrder?.total_amount || pending.order?.total_amount || 0),
+      } : null);
+      setCart([]);
+      setTerminalRecovery(null);
+      setPendingTerminalOrder(null);
+      activePaymentRequestIdRef.current = null;
+      activePaymentOrderIdRef.current = null;
+      activePaymentOrderRef.current = null;
+      setActivePaymentRequestId(null);
+      setActivePaymentOrderId(null);
+      setShowStripeModal(false);
+      showNotification('Existing order completed in cash!');
+    } catch (err) {
+      showNotification(err.message || 'Switching to cash failed', 'error');
+    } finally {
+      checkoutInFlightRef.current = false;
+    }
+  };
+
+  const handleCancelPendingOrder = async () => {
+    const pending = getReusablePendingTerminalOrder();
+    if (!pending) return;
+    try {
+      checkoutInFlightRef.current = true;
+      const { error } = await supabase.rpc('cancel_accounting_card_payment', {
+        p_order_id: pending.orderId,
+        p_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null,
+      });
+      if (error) throw error;
+      setCart([]);
+      setTerminalRecovery(null);
+      setPendingTerminalOrder(null);
+      activePaymentRequestIdRef.current = null;
+      activePaymentOrderIdRef.current = null;
+      activePaymentOrderRef.current = null;
+      setActivePaymentRequestId(null);
+      setActivePaymentOrderId(null);
+      setShowStripeModal(false);
+      showNotification('Order cancelled. The POS is ready for the next customer.', 'info');
+    } catch (err) {
+      showNotification(err.message || 'Order cancellation failed', 'error');
+    } finally {
+      checkoutInFlightRef.current = false;
+    }
+  };
+
   const handleRetryCardPayment = async () => {
     if (!activeSplit?.split_id) return;
     try {
@@ -2217,11 +2467,15 @@ export default function App() {
       });
       if (error) throw error;
       const res = Array.isArray(data) ? data[0] : data;
-      setActivePaymentRequestId(res.card_payment_request_id);
-      setShowStripeModal(true);
-      setStripeStatus('pending');
+      activateTerminalAttempt({
+        requestId: res.card_payment_request_id,
+        orderId: activePaymentOrderRef.current?.id || activeSplit.order_id,
+        provider: activePaymentProvider,
+        status: 'pending',
+        order: activePaymentOrderRef.current,
+      });
       if (activePaymentProvider === 'stripe_server_driven') {
-        const { error: retryError } = await supabase.functions.invoke('retry-server-driven-terminal-payment', {
+        const { error: retryError } = await supabase.functions.invoke('start-server-driven-terminal-payment', {
           body: { payment_request_id: res.card_payment_request_id, ...terminalDeviceCredentials() },
         });
         if (retryError) throw retryError;
@@ -3605,104 +3859,89 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" dir={isArabic ? "rtl" : "ltr"}>
           <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-md w-full shadow-2xl p-6 border border-slate-100 dark:border-slate-700 space-y-6 text-center">
             <div className="flex justify-center">
-              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 rounded-2xl text-emerald-500 animate-pulse">
+              <div className={`p-3 rounded-2xl ${terminalRecovery ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-500' : 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-500 animate-pulse'}`}>
                 <CreditCard className="w-8 h-8" />
               </div>
             </div>
 
             <div className="space-y-2">
               <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
-                {stripeStatus === 'succeeded'
-                  ? 'Payment Confirmed'
-                  : stripeStatus === 'failed'
-                    ? 'Payment Failed'
-                    : activePaymentProvider === 'stripe_server_driven' ? 'Waiting for customer' : 'Connecting to Card Reader...'}
+                {terminalRecovery?.status === 'cancelled'
+                  ? 'Payment cancelled'
+                  : terminalRecovery
+                    ? 'Card payment failed'
+                    : stripeStatus === 'succeeded'
+                      ? 'Payment Confirmed'
+                      : stripeStatus === 'failed'
+                        ? 'Payment Failed'
+                        : activePaymentProvider === 'stripe_server_driven' ? 'Waiting for customer' : 'Connecting to Card Reader...'}
               </h3>
               <p className="text-xs text-slate-400 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
-                {stripeStatus === 'succeeded'
-                  ? 'Closing the payment window now.'
-                  : stripeStatus === 'failed'
-                    ? 'You can retry the card or close this payment.'
-                  : activePaymentProvider === 'stripe_server_driven'
-                    ? 'Present card on the WisePOS E reader.'
-                    : 'Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader.'}
+                {terminalRecovery
+                  ? (terminalRecovery.message || (terminalRecovery.status === 'cancelled' ? 'The customer cancelled the card payment. The unpaid order is still available.' : 'The card payment did not complete.'))
+                  : stripeStatus === 'succeeded'
+                    ? 'Closing the payment window now.'
+                    : stripeStatus === 'failed'
+                      ? 'You can retry the card or close this payment.'
+                      : activePaymentProvider === 'stripe_server_driven'
+                        ? 'Present card on the WisePOS E reader.'
+                        : 'Stripe Terminal: Please tap, insert or swipe card on the BBPOS WisePad 3 reader.'}
               </p>
             </div>
 
             <p className="text-[10px] font-bold uppercase tracking-wide text-amber-500">
-              {stripeStatus.replaceAll('_', ' ')}
+              {(terminalRecovery?.status || stripeStatus).replaceAll('_', ' ')}
             </p>
 
-            {stripeStatus === 'failed' && (
-              <button
-                onClick={async () => {
-                  if (stripeStatus === 'failed') {
-                    setShowStripeModal(false);
-                    setActivePaymentOrderId(null);
-                    setActivePaymentRequestId(null);
-                    activePaymentOrderIdRef.current = null;
-                    activePaymentOrderRef.current = null;
-                    return;
-                  }
-                  try {
-                    if (activeSplit?.split_id) {
-                      await handleRetryCardPayment();
-                    } else if (activePaymentProvider === 'stripe_server_driven') {
-                      const { error } = await supabase.functions.invoke('retry-server-driven-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
+            {terminalRecovery ? (
+              <div className="flex flex-col gap-2.5 pt-2">
+                <button
+                  onClick={handleRetryPendingCard}
+                  className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs cursor-pointer"
+                >Retry card</button>
+                <button
+                  onClick={handlePayPendingOrderInCash}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs cursor-pointer"
+                >Choose cash</button>
+                <button
+                  onClick={() => setShowStripeModal(false)}
+                  className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-white rounded-xl font-bold text-xs cursor-pointer"
+                >Return to cart</button>
+                <button
+                  onClick={handleCancelPendingOrder}
+                  className="w-full py-2.5 bg-rose-100 hover:bg-rose-200 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 rounded-xl font-bold text-xs cursor-pointer"
+                >Cancel order</button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5 pt-2">
+                {stripeStatus === 'failed' && pendingTerminalOrder && (
+                  <button
+                    onClick={handleRetryPendingCard}
+                    className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs cursor-pointer"
+                  >Retry card</button>
+                )}
+                <button
+                  onClick={async () => {
+                    if (isCancellingPayment || !activePaymentRequestId) return;
+                    setIsCancellingPayment(true);
+                    try {
+                      const { data, error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
                       if (error) throw error;
-                      const retryRequestId = activePaymentRequestId;
-                      setActivePaymentRequestId(null);
-                      setTimeout(() => setActivePaymentRequestId(retryRequestId), 0);
-                    } else {
-                      const { data, error } = await supabase.rpc('request_terminal_card_payment', {
-                        p_order_id: activePaymentOrderId,
-                        p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
-                      });
-                      if (error) throw error;
-                      const nextRequest = Array.isArray(data) ? data[0] : data;
-                      if (!nextRequest?.id) throw new Error('Card payment retry was not accepted.');
-                      setActivePaymentRequestId(nextRequest.id);
+                      showNotification(data?.status === 'cancelled' ? 'Payment cancellation confirmed.' : 'Card payment cancellation requested', 'info');
+                    } catch (e) {
+                      showNotification(e.message || 'Card payment cancellation failed', 'error');
+                    } finally {
+                      setIsCancellingPayment(false);
                     }
-                    setStripeStatus('pending');
-                    setShowStripeModal(true);
-                  } catch (error) {
-                    showNotification(error.message || 'Retry card payment failed', 'error');
-                  }
-                }}
-                className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs cursor-pointer"
-              >Retry Card</button>
+                  }}
+                  aria-label={stripeStatus === 'failed' ? 'Close failed payment' : 'Cancel payment'}
+                  disabled={isCancellingPayment || !activePaymentRequestId}
+                  className="w-full py-2.5 bg-slate-200 hover:bg-slate-300 disabled:opacity-60 dark:bg-slate-600 dark:hover:bg-slate-500 text-slate-900 dark:text-white rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
+                >
+                  {isCancellingPayment ? 'Cancelling payment...' : stripeStatus === 'failed' ? 'Close / Cancel Payment' : 'Cancel Payment'}
+                </button>
+              </div>
             )}
-
-            <div className="flex flex-col gap-2.5 pt-2">
-              <button
-                onClick={async () => {
-                  if (isCancellingPayment) return;
-                  setIsCancellingPayment(true);
-                  try {
-                    const { data, error } = await supabase.functions.invoke('cancel-terminal-payment', { body: { payment_request_id: activePaymentRequestId, ...terminalDeviceCredentials() } });
-                    if (error) throw error;
-                    if (data?.status === 'cancelled') {
-                      setShowStripeModal(false);
-                      setActivePaymentOrderId(null);
-                      setActivePaymentRequestId(null);
-                      activePaymentOrderIdRef.current = null;
-                      activePaymentOrderRef.current = null;
-                    }
-                  } catch (e) {
-                    showNotification(e.message || 'Card payment cancellation failed', 'error');
-                    return;
-                  } finally {
-                    setIsCancellingPayment(false);
-                  }
-                  showNotification('Card payment cancellation requested', 'info');
-                }}
-                aria-label={stripeStatus === 'failed' ? 'Close failed payment' : 'Cancel payment'}
-                disabled={isCancellingPayment}
-                className="w-full py-2.5 bg-slate-200 hover:bg-slate-300 disabled:opacity-60 dark:bg-slate-600 dark:hover:bg-slate-500 text-slate-900 dark:text-white rounded-xl font-bold text-xs active:scale-[0.99] transition-all cursor-pointer"
-              >
-                {isCancellingPayment ? 'Cancelling payment...' : stripeStatus === 'failed' ? 'Close / Cancel Payment' : 'Cancel Payment'}
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -4375,7 +4614,7 @@ export default function App() {
       )}
 
       {/* Card Failure & Split Recovery Modal */}
-      {activeSplit && activeSplit.status !== 'succeeded' && activeSplit.status !== 'cancelled' && stripeStatus === 'failed' && (
+      {activeSplit && activeSplit.status !== 'succeeded' && activeSplit.status !== 'cancelled' && ['failed', 'cancelled'].includes(stripeStatus) && (
         <div className="fixed inset-0 bg-black/60 z-55 flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in" dir={isArabic ? "rtl" : "ltr"}>
           <div className="bg-white dark:bg-slate-800 rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-700 flex flex-col p-6 space-y-5">
             <div className="text-center space-y-2">
@@ -4383,10 +4622,14 @@ export default function App() {
                 ⚠️
               </div>
               <h3 className="font-extrabold text-lg text-slate-800 dark:text-white">
-                {isArabic ? "فشل دفع البطاقة" : "Card Payment Failed"}
+                {stripeStatus === 'cancelled'
+                  ? (isArabic ? "تم إلغاء الدفع" : "Payment cancelled")
+                  : (isArabic ? "فشل دفع البطاقة" : "Card Payment Failed")}
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                {isArabic ? "تم استلام المبلغ النقدي بنجاح. البطاقة لم تكتمل." : "Cash portion confirmed. Card payment could not be processed."}
+                {stripeStatus === 'cancelled'
+                  ? (isArabic ? "تم إلغاء البطاقة. المبلغ النقدي ما زال محفوظاً." : "The customer cancelled the card. The cash portion remains available.")
+                  : (isArabic ? "تم استلام المبلغ النقدي بنجاح. البطاقة لم تكتمل." : "Cash portion confirmed. Card payment could not be processed.")}
               </p>
             </div>
 
