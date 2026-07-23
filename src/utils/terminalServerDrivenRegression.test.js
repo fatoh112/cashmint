@@ -14,6 +14,7 @@ const integrationSource = read('../admin/IntegrationSettings.jsx');
 const completionMigration = read('../../supabase/migrations/20260722121432_secure_server_driven_terminal_completion.sql');
 const staleReaderMigration = read('../../supabase/migrations/20260723160529_recover_stale_server_driven_reader_state.sql');
 const posAccessMigration = read('../../supabase/migrations/20260723163259_restore_terminal_rpc_pos_access.sql');
+const activePaymentMigration = read('../../supabase/migrations/20260723203259_expose_active_terminal_payment_to_pos.sql');
 
 describe('WisePOS E server-driven regression guards', () => {
   it('sends POS device credentials with server-driven operations', () => {
@@ -82,6 +83,12 @@ describe('WisePOS E server-driven regression guards', () => {
   it('keeps guarded terminal RPCs available to POS-device cashier sessions', () => {
     expect(posAccessMigration).toContain('GRANT EXECUTE ON FUNCTION public.request_terminal_card_payment(UUID,UUID) TO anon, authenticated;');
     expect(posAccessMigration).toContain('GRANT EXECUTE ON FUNCTION public.terminal_payment_availability(UUID,UUID) TO anon, authenticated;');
+  });
+
+  it('restores a live terminal payment after a POS reload instead of creating a second order', () => {
+    expect(activePaymentMigration).toContain("'active_payment_request_id',v_active_request.id");
+    expect(appSource).toContain('resumeActiveTerminalPayment');
+    expect(appSource).toContain('availability?.active_payment');
   });
 
   it('retrieval uses the same trusted completion RPC as the webhook', () => {

@@ -604,6 +604,17 @@ export default function App() {
   const autoPrintJobsRef = useRef(new Map());
   const autoPrintQueueRef = useRef(Promise.resolve());
 
+  const resumeActiveTerminalPayment = useCallback((availability) => {
+    const requestId = availability?.active_payment_request_id;
+    if (!requestId) return false;
+    setActivePaymentOrderId(availability.active_payment_order_id || null);
+    setActivePaymentRequestId(requestId);
+    setActivePaymentProvider(availability.provider_type || 'stripe_android_bridge');
+    setStripeStatus(availability.active_payment_status || 'waiting_for_card');
+    setShowStripeModal(true);
+    return true;
+  }, []);
+
   // Split Payment states
   const [showSplitModal, setShowSplitModal] = useState(false);
   const [splitCashInput, setSplitCashInput] = useState('');
@@ -900,15 +911,19 @@ export default function App() {
             activePayment: nextActivePayment,
             providerType: nextProvider,
             readerBusy: !error && data?.reader_busy === true,
+            activePaymentRequestId: !error ? data?.active_payment_request_id || null : null,
+            activePaymentOrderId: !error ? data?.active_payment_order_id || null : null,
+            activePaymentStatus: !error ? data?.active_payment_status || null : null,
             failureMessage: error?.message || data?.failure_message || null
           };
         });
+        if (!error && data?.active_payment_request_id) resumeActiveTerminalPayment(data);
       }
     };
     check();
     const interval = setInterval(check, 5000);
     return () => { alive = false; clearInterval(interval); };
-  }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId]);
+  }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId, resumeActiveTerminalPayment]);
 
   // Backoffice PIN Gate & OTP Recovery States
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
@@ -1883,6 +1898,18 @@ export default function App() {
 
       const activeStoreId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
       const activeSessionId = activeCashierSession?.id || localStorage.getItem('cashier_session_id');
+
+      if (paymentMethod === 'card') {
+        const { data: availability, error: availabilityError } = await supabase.rpc('terminal_payment_availability', {
+          p_store_id: activeStoreId,
+          p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+        });
+        if (availabilityError) throw availabilityError;
+        if (availability?.active_payment) {
+          resumeActiveTerminalPayment(availability);
+          throw new Error('A card payment is already awaiting the customer on the WisePOS E reader.');
+        }
+      }
 
       const cartItems = cart.map(item => ({
         name: item.product?.name || 'Product',
