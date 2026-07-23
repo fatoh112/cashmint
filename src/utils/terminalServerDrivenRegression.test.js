@@ -13,6 +13,7 @@ const manageSource = read('../../supabase/functions/manage-server-driven-reader/
 const integrationSource = read('../admin/IntegrationSettings.jsx');
 const completionMigration = read('../../supabase/migrations/20260722121432_secure_server_driven_terminal_completion.sql');
 const staleReaderMigration = read('../../supabase/migrations/20260723160529_recover_stale_server_driven_reader_state.sql');
+const posAccessMigration = read('../../supabase/migrations/20260723163259_restore_terminal_rpc_pos_access.sql');
 
 describe('WisePOS E server-driven regression guards', () => {
   it('sends POS device credentials with server-driven operations', () => {
@@ -76,6 +77,11 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(staleReaderMigration).toContain('pr.stripe_reader_id=v_reader.stripe_reader_id');
     expect(staleReaderMigration).toContain("status IN('pending','claimed','creating_payment_intent','waiting_for_card','processing','cancel_requested','unknown')");
     expect(staleReaderMigration).toContain('v_reader_has_active_payment');
+  });
+
+  it('keeps guarded terminal RPCs available to POS-device cashier sessions', () => {
+    expect(posAccessMigration).toContain('GRANT EXECUTE ON FUNCTION public.request_terminal_card_payment(UUID,UUID) TO anon, authenticated;');
+    expect(posAccessMigration).toContain('GRANT EXECUTE ON FUNCTION public.terminal_payment_availability(UUID,UUID) TO anon, authenticated;');
   });
 
   it('retrieval uses the same trusted completion RPC as the webhook', () => {
