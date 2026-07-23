@@ -44,6 +44,15 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(startSource).toContain('terminalPaymentContext(req, payment_request_id, input)');
   });
 
+  it('releases an orphaned live Reader action only after confirming no active payment owns it', () => {
+    expect(startSource).toContain('releaseOrphanedReaderAction');
+    expect(startSource).toContain(".neq('id', request.id)");
+    expect(startSource).toContain(".in('status', activeRequestStatuses)");
+    expect(startSource).toContain("staleIntent.status === 'succeeded'");
+    expect(startSource).toContain('reader-orphan-recovery:${request.id}');
+    expect(startSource).toContain("'WisePOS E reader did not release its previous action'");
+  });
+
   it('retry resolves a Stripe Reader ID, never a UUID column', () => {
     expect(retrySource).toContain(".eq('stripe_reader_id', request.stripe_reader_id)");
     expect(retrySource).not.toContain(".eq('id', request.stripe_reader_id)");

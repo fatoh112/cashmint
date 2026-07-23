@@ -1,5 +1,62 @@
 import { assertCardPaymentsCapability, corsHeaders, json, safeReader, service, stripeRequest, terminalPaymentContext } from '../_shared/terminal.ts'
 
+const activeRequestStatuses = ['pending', 'claimed', 'creating_payment_intent', 'waiting_for_card', 'processing', 'cancel_requested', 'unknown']
+
+function actionPaymentIntentId(reader: Record<string, any>) {
+  const action = reader.action && typeof reader.action === 'object' ? reader.action : {}
+  const paymentIntentId = action.process_payment_intent?.payment_intent ?? action.payment_intent
+  return typeof paymentIntentId === 'string' ? paymentIntentId : null
+}
+
+async function releaseOrphanedReaderAction(
+  db: ReturnType<typeof service>,
+  request: Record<string, any>,
+  reader: Record<string, any>,
+  config: Record<string, any>,
+  fresh: Record<string, any>,
+) {
+  if (fresh.action?.status !== 'in_progress') return fresh
+
+  const { data: activeRequest, error: activeRequestError } = await db.from('payment_requests')
+    .select('id')
+    .eq('location_id', request.location_id)
+    .eq('stripe_reader_id', reader.stripe_reader_id)
+    .neq('id', request.id)
+    .in('status', activeRequestStatuses)
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle()
+  if (activeRequestError) throw activeRequestError
+  if (activeRequest) throw new Error('WisePOS E reader is busy with another active payment')
+
+  const stalePaymentIntentId = actionPaymentIntentId(fresh)
+  if (stalePaymentIntentId) {
+    const staleIntent = await stripeRequest(`/payment_intents/${stalePaymentIntentId}`, config.provider_config ?? {})
+    if (staleIntent.status === 'succeeded') throw new Error('WisePOS E reader has a completed action awaiting Stripe reconciliation')
+  }
+
+  // No local payment owns this action and it is not a successful charge. Release it before starting a new order.
+  try {
+    await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}/cancel_action`, config.provider_config ?? {}, { method: 'POST', body: '' }, `reader-orphan-recovery:${request.id}`)
+  } catch (_) {
+    // The action may have just become final. The read below is authoritative.
+  }
+  const recovered = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}`, config.provider_config ?? {})
+  const action = recovered.action && typeof recovered.action === 'object' ? recovered.action : {}
+  const { error: readerUpdateError } = await db.from('stripe_terminal_readers').update({
+    status: recovered.status ?? null,
+    action_status: action.status ?? 'idle',
+    action_type: action.type ?? null,
+    last_seen_at: recovered.last_seen_at ? new Date(Number(recovered.last_seen_at)).toISOString() : null,
+    last_synced_at: new Date().toISOString(),
+    last_error_code: action.failure_code ?? null,
+    last_error_message: action.failure_message ?? null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', reader.id)
+  if (readerUpdateError) throw readerUpdateError
+  if (recovered.action?.status === 'in_progress') throw new Error('WisePOS E reader did not release its previous action')
+  return recovered
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   try {
@@ -21,9 +78,9 @@ Deno.serve(async (req) => {
       .maybeSingle()
     if (readerError || !reader) throw new Error('WisePOS E reader is not configured')
 
-    const fresh = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}`, config.provider_config ?? {})
+    let fresh = await stripeRequest(`/terminal/readers/${reader.stripe_reader_id}`, config.provider_config ?? {})
     if (fresh.location !== reader.stripe_location_id || fresh.status !== 'online') throw new Error('WisePOS E reader is offline or assigned to the wrong location')
-    if (fresh.action?.status === 'in_progress') throw new Error('WisePOS E reader is busy')
+    fresh = await releaseOrphanedReaderAction(db, request, reader, config, fresh)
 
     const amount = Number(request.amount_cents ?? Math.round(Number(request.orders.total_amount) * 100))
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error('Server payment amount is invalid')
