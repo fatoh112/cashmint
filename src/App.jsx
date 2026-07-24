@@ -47,6 +47,21 @@ const terminalCartFingerprint = (items) => JSON.stringify((items || []).map(item
   modifiers: (item.selectedModifiers || []).map(modifier => ({ id: modifier.id, price: modifier.price_adjustment })).sort((a, b) => String(a.id).localeCompare(String(b.id))),
 })))
 
+const terminalAvailabilityMessage = (reason, isArabic) => ({
+  READER_OFFLINE: isArabic
+    ? '\u062c\u0647\u0627\u0632 WisePOS E \u063a\u064a\u0631 \u0645\u062a\u0635\u0644. \u062a\u0623\u0643\u062f \u0645\u0646 \u062a\u0634\u063a\u064a\u0644 \u0627\u0644\u062c\u0647\u0627\u0632 \u0648\u0627\u062a\u0635\u0627\u0644\u0647 \u0628\u0627\u0644\u0625\u0646\u062a\u0631\u0646\u062a.'
+    : 'WisePOS E is offline. Check that the device is powered on and connected to the internet.',
+  READER_BUSY: isArabic
+    ? '\u062c\u0647\u0627\u0632 WisePOS E \u064a\u0639\u0627\u0644\u062c \u0639\u0645\u0644\u064a\u0629 \u062f\u0641\u0639 \u0623\u062e\u0631\u0649 \u062d\u0627\u0644\u064a\u064b\u0627.'
+    : 'WisePOS E is processing another payment.',
+  STALE_PAYMENT_REQUEST: isArabic
+    ? '\u062a\u0648\u062c\u062f \u0639\u0645\u0644\u064a\u0629 \u062f\u0641\u0639 \u0633\u0627\u0628\u0642\u0629 \u062a\u062d\u062a\u0627\u062c \u0625\u0644\u0649 \u0627\u0644\u0627\u0633\u062a\u0639\u0627\u062f\u0629 \u0642\u0628\u0644 \u0628\u062f\u0621 \u0639\u0645\u0644\u064a\u0629 \u062c\u062f\u064a\u062f\u0629.'
+    : 'A previous card payment needs recovery before starting a new one.',
+  TERMINAL_NOT_CONFIGURED: isArabic
+    ? '\u062c\u0647\u0627\u0632 WisePOS E \u063a\u064a\u0631 \u0645\u0647\u064a\u0623 \u0644\u0647\u0630\u0627 \u0627\u0644\u0645\u062a\u062c\u0631.'
+    : 'WisePOS E is not configured for this store.',
+}[reason] || (isArabic ? '\u062a\u0639\u0630\u0631 \u0627\u0644\u062a\u062d\u0642\u0642 \u0645\u0646 \u0627\u062a\u0635\u0627\u0644 \u062c\u0647\u0627\u0632 WisePOS E.' : 'Unable to verify WisePOS E connection. Try again.'));
+
 // Lazy load onboarding wizard, superadmin, and landing page components for build-time tree-shaking
 const OnboardingWizard = React.lazy(() => import('./components/OnboardingWizard'));
 const SuperAdminDashboard = isMasterHost
@@ -608,6 +623,7 @@ export default function App() {
   const [terminalRecovery, setTerminalRecovery] = useState(null);
   const [pendingTerminalOrder, setPendingTerminalOrder] = useState(null);
   const [terminalAvailability, setTerminalAvailability] = useState({ checked: false, available: false });
+  const terminalAvailabilityCheckRef = useRef(null);
   const [showManualSaleModal, setShowManualSaleModal] = useState(false);
   const [manualSaleAmountInput, setManualSaleAmountInput] = useState('');
   const [manualSaleDescription, setManualSaleDescription] = useState('');
@@ -733,7 +749,7 @@ export default function App() {
       return;
     }
     if (terminalAvailability.providerType !== 'stripe_server_driven' || !terminalAvailability.available) {
-      setManualSaleError(isArabic ? 'قارئ WisePOS E غير متاح حالياً.' : 'The WisePOS E reader is not available right now.');
+      setManualSaleError(terminalAvailabilityMessage(terminalAvailability.reason, isArabic));
       return;
     }
     const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
@@ -1154,12 +1170,17 @@ export default function App() {
   // registered Android bridge has recently reported an attached reader.
   useEffect(() => {
     if (!isPosMode) return;
+    // The legacy terminal_payment_availability RPC remains available as the
+    // cached compatibility snapshot; this poll uses Stripe-authoritative Edge
+    // Function results so stale DB action_status cannot claim the Reader.
     const storeId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
     const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id');
     if (!storeId) return;
     let alive = true;
     const check = async () => {
-      const { data, error } = await supabase.rpc('terminal_payment_availability', { p_store_id: storeId, p_pos_device_id: deviceId || null });
+      const { data, error } = await supabase.functions.invoke('terminal-payment-availability', {
+        body: { store_id: storeId, ...terminalDeviceCredentials() },
+      });
       if (alive) {
         const terminalNotConfigured = data?.configured === false || data?.reason === 'TERMINAL_NOT_CONFIGURED' || error?.code === 'TERMINAL_NOT_CONFIGURED';
         if (error && !terminalNotConfigured) console.error('Terminal availability check failed:', error);
@@ -1183,15 +1204,20 @@ export default function App() {
             activePaymentRequestId: !error ? data?.active_payment_request_id || null : null,
             activePaymentOrderId: !error ? data?.active_payment_order_id || null : null,
             activePaymentStatus: !error ? data?.active_payment_status || null : null,
+            reason: !error ? data?.reason || null : 'READER_SYNC_FAILED',
+            activePaymentAgeSeconds: !error ? data?.active_payment_age_seconds ?? null : null,
+            lastSeenAt: !error ? data?.last_seen_at || null : null,
+            lastSyncedAt: !error ? data?.last_synced_at || null : null,
             failureMessage: error?.message || data?.failure_message || null
           };
         });
         if (!error && data?.active_payment_request_id) resumeActiveTerminalPayment(data);
       }
     };
+    terminalAvailabilityCheckRef.current = check;
     check();
     const interval = setInterval(check, 5000);
-    return () => { alive = false; clearInterval(interval); };
+    return () => { alive = false; clearInterval(interval); if (terminalAvailabilityCheckRef.current === check) terminalAvailabilityCheckRef.current = null; };
   }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId, resumeActiveTerminalPayment, isPosMode]);
 
   // Backoffice PIN Gate & OTP Recovery States
@@ -2382,14 +2408,14 @@ export default function App() {
       const activeSessionId = activeCashierSession?.id || localStorage.getItem('cashier_session_id');
 
       if (paymentMethod === 'card') {
-        const { data: availability, error: availabilityError } = await supabase.rpc('terminal_payment_availability', {
-          p_store_id: activeStoreId,
-          p_pos_device_id: deviceAuth?.deviceId || localStorage.getItem('device_id') || null
+        const { data: availability, error: availabilityError } = await supabase.functions.invoke('terminal-payment-availability', {
+          body: { store_id: activeStoreId, ...terminalDeviceCredentials() },
         });
         if (availabilityError) throw availabilityError;
-        if (availability?.active_payment) {
+        setTerminalAvailability(prev => ({ ...prev, checked: true, ...availability, providerType: availability?.provider_type, activePayment: Boolean(availability?.active_payment_request_id), readerOnline: availability?.reader_status === 'online', readerBusy: availability?.reason === 'READER_BUSY', activePaymentRequestId: availability?.active_payment_request_id || null }));
+        if (availability?.reason !== 'READY' || availability?.available !== true) {
           resumeActiveTerminalPayment(availability);
-          throw new Error('A card payment is already awaiting the customer on the WisePOS E reader.');
+          throw new Error(terminalAvailabilityMessage(availability?.reason, isArabic));
         }
       }
 
@@ -2587,7 +2613,7 @@ export default function App() {
       showNotification(
         terminalAvailability.activePayment
           ? (isArabic ? 'يوجد دفع بطاقة نشط بالفعل. ألغِه أولاً.' : 'Another card payment is already active. Cancel it first.')
-          : (isArabic ? 'قارئ WisePOS E غير متاح حاليًا.' : 'The WisePOS E reader is not available right now.'),
+          : terminalAvailabilityMessage(terminalAvailability.reason, isArabic),
         'error'
       );
       return;
@@ -4136,6 +4162,12 @@ export default function App() {
               <p className="mb-2 text-center text-[11px] font-bold text-slate-500 dark:text-slate-400">
                 {isArabic ? 'جهاز WisePOS E غير مهيأ لهذا المتجر.' : 'WisePOS E is not configured for this store.'}
               </p>
+            )}
+            {terminalAvailability.checked && terminalAvailability.configured !== false && terminalAvailability.reason && terminalAvailability.reason !== 'READY' && (
+              <div className="mb-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] font-bold text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                <p>{terminalAvailabilityMessage(terminalAvailability.reason, isArabic)}</p>
+                <button type="button" onClick={() => terminalAvailabilityCheckRef.current?.()} className="mt-1 underline">{isArabic ? '\u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0641\u062d\u0635' : 'Retry connection check'}</button>
+              </div>
             )}
 
             {/* Primary Checkout Button */}
