@@ -1,0 +1,111 @@
+name: Build and Deploy Cashmint
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cashmint-production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Build Master
+        run: npm run build:master
+
+      - name: Build POS
+        run: npm run build:pos
+
+      - name: Build Store
+        run: npm run build:store
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy all Cashmint builds
+        env:
+          SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_SSH_USER }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+          MASTER_PATH: ${{ secrets.HOSTINGER_MASTER_PATH }}
+          POS_PATH: ${{ secrets.HOSTINGER_POS_PATH }}
+          STORE_PATH: ${{ secrets.HOSTINGER_STORE_PATH }}
+        run: |
+          set -euo pipefail
+
+          deploy_build() {
+            SOURCE_DIR="$1"
+            TARGET_DIR="$2"
+            SITE_NAME="$3"
+
+            echo "Deploying $SITE_NAME from $SOURCE_DIR to $TARGET_DIR"
+
+            test -d "$SOURCE_DIR"
+
+            ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "
+              test -d '$TARGET_DIR' &&
+              rm -rf '$TARGET_DIR/assets' &&
+              rm -f '$TARGET_DIR/index.html' &&
+              rm -f '$TARGET_DIR/sw.js' &&
+              rm -f '$TARGET_DIR/registerSW.js' &&
+              rm -f '$TARGET_DIR'/workbox-*.js
+            "
+
+            tar -C "$SOURCE_DIR" -czf - . | \
+              ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+              "tar -xzf - -C '$TARGET_DIR'"
+
+            ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "
+              test -f '$TARGET_DIR/index.html' &&
+              test -d '$TARGET_DIR/assets'
+            "
+
+            echo "$SITE_NAME deployed successfully"
+          }
+
+          deploy_build "dist-master" "$MASTER_PATH" "cashmint.online"
+          deploy_build "dist-pos" "$POS_PATH" "cashmint.net"
+          deploy_build "dist-store" "$STORE_PATH" "cashmint.store"
+
+      - name: Deployment summary
+        run: |
+          echo "Deployment completed:"
+          echo "dist-master -> cashmint.online"
+          echo "dist-pos -> cashmint.net"
+          echo "dist-store -> cashmint.store"
