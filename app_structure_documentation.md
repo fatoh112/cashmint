@@ -23,16 +23,15 @@ This document provides a complete, updated breakdown of the current architecture
 - **Serverless Functions:** Supabase Edge Functions (Deno runtime) for API webhooks, AI business analytics, user administration, and menu extraction.
 
 ### Third-Party Integrations
-1. **Stripe Terminal via Android Bridge (active payment system):**
-   - The active card-payment path is `stripe_android_bridge`, configured per restaurant location in `restaurant_payment_configs` and processed by the Android bridge and a Stripe Terminal reader.
-   - Stripe Connect tables/functions remain in the repository but are not the active POS payment flow. The legacy browser-local Stripe form is not active and must not be treated as a payment configuration.
+1. **Stripe Terminal via server-driven WisePOS E (active payment system):**
+   - The active card-payment path is `stripe_server_driven`, configured as enabled and primary per restaurant location in `restaurant_payment_configs`. The POS calls authenticated Supabase Edge Functions, which create/retrieve PaymentIntents and control the WisePOS E through Stripe's server-side Terminal API.
+   - Stripe webhook completion and the trusted `complete_terminal_payment` RPC are the financial authorities. The browser never marks an order paid and receipt printing starts only after verified completion.
+   - `stripe_android_bridge` remains a separate disabled, non-primary legacy provider for WisePad 3 deployments. It must not be enabled or selected automatically during WisePOS E recovery.
 2. **Payments Deep Linking (Viva Wallet & SumUp):**
    - Supports deep linking to external payment provider apps (Viva Wallet/SumUp) using native device URI schemes.
-3. **Stripe Android Payment Bridge (BBPOS WisePad 3):**
-   - The POS does not communicate directly with the Android phone or reader. The flow is: `POS -> Supabase payment request -> Android Bridge -> Stripe reader -> Supabase status update -> POS`.
-   - The Android bridge enrols with a single-use Backoffice code, receives a dedicated Supabase Auth session, then sends `bridge_heartbeat` every 20 seconds and listens for payment requests through Realtime plus reconciliation polling.
-   - The Card / Visa choice in the POS is enabled only when the server reports an enabled `stripe_android_bridge` configuration and a terminal device with `status = online`, `reader_status = connected`, and a heartbeat no older than 60 seconds. A locally connected reader is not sufficient if the bridge cannot update Supabase.
-   - Android Bridge version **1.0.16** protects the periodic loop from uncaught exceptions, immediately sends a heartbeat after the reader connects, separates reader connection state from payment action state, validates Supabase Auth JWTs before Realtime connects, treats Stripe final failures as final, prevents completed/cancelled requests from replaying, and keeps REST polling as the fallback when Realtime is unavailable. Its source lives in `android-payment-bridge/`; the APK must be rebuilt and installed before the device receives Android-side updates.
+3. **Stripe Android Payment Bridge (BBPOS WisePad 3, parked provider):**
+   - This is a separate legacy path: `POS -> Supabase payment request -> Android Bridge -> Stripe reader -> Supabase status update -> POS`.
+   - Its enrollment, heartbeat, Realtime, and fallback polling code remains in `android-payment-bridge/`, but it is not the active Picabeans provider. WisePOS E changes must not alter its records, enable it, or change provider priority.
 4. **Cloud Order Webhook:** HubRise API order webhooks.
 5. **Local Hardware Printing (Epson TM-T20IV & TM-M30):**
    - Sends ePOS-Print XML commands over SOAP POST requests to the local printer IP using a secure HTTPS endpoint (`https://{IP}/cgi-bin/epos/service.cgi`).
@@ -93,7 +92,7 @@ This section describes the runtime processes that move through the whole system.
 6. Cash orders can complete without Stripe because the server-side accounting RPC is the final authority for cash settlement.
 
 ### 2.5 Stripe Terminal Card Checkout Overview
-Card checkout is split across the POS browser, Supabase, the Android bridge, Stripe Terminal, Stripe webhook, and printer. The browser never talks directly to the WisePad 3 and never marks a card order paid by itself.
+Card checkout is split across the POS browser, Supabase RPCs, server-driven Supabase Edge Functions, Stripe Terminal, the Stripe webhook, and the printer. The browser never talks directly to the WisePOS E and never marks a card order paid by itself.
 
 High-level flow:
 
@@ -102,40 +101,40 @@ sequenceDiagram
     participant POS as Cashier POS (iPad/browser)
     participant DB as Supabase DB/RPC
     participant Fn as Supabase Edge Functions
-    participant Android as Android Bridge
-    participant Reader as WisePad 3
+    participant Reader as WisePOS E
     participant Stripe as Stripe Terminal/API
     participant Webhook as Stripe Webhook
     participant Printer as Epson Printer
 
+    POS->>Fn: fresh terminal-payment-availability preflight
+    Fn->>Stripe: retrieve Reader + stale PaymentIntent state
     POS->>DB: create pending accounting order + payment_request
-    Android->>DB: heartbeat + availability
-    Android->>DB: claim_terminal_payment_request
-    Android->>Fn: create-terminal-payment-intent
-    Fn->>Stripe: create PaymentIntent server-side
-    Android->>Stripe: retrievePaymentIntent
-    Android->>Reader: collectPaymentMethod
-    Android->>Stripe: processPayment
-    Android->>DB: status unknown, waiting for webhook
+    POS->>Fn: start-server-driven-terminal-payment
+    Fn->>Stripe: create/retrieve PaymentIntent
+    Fn->>Reader: process PaymentIntent
+    Reader-->>Fn: Reader action status
+    POS->>Fn: retrieve-terminal-payment-status
     Stripe->>Webhook: payment_intent.succeeded/canceled/failed
     Webhook->>DB: complete/cancel order and payment_request
     DB-->>POS: Realtime/polling status update
     POS->>Printer: print receipt only after confirmed completion
 ```
 
-### 2.6 Card Availability Process
-1. A Backoffice or deployment process configures `restaurant_payment_configs` with the active `stripe_android_bridge` provider and non-secret Stripe routing data such as `stripe_location_id`.
-2. The Android bridge must be enrolled, authenticated, connected to the WisePad 3, and sending heartbeat updates.
-3. `bridge_heartbeat` updates `terminal_devices.status`, `reader_status`, `last_heartbeat_at`, app version, and current active payment request ID.
-4. The POS calls `terminal_payment_availability` on startup and periodically.
-5. The Visa/Card button is enabled only when Supabase reports:
-   - active `stripe_android_bridge` configuration.
-   - online terminal device.
-   - connected reader.
-   - fresh heartbeat, normally within 60 seconds.
-6. If Realtime is blocked, unavailable, or returns 403, REST polling remains the fallback. Card availability and payment reconciliation must not depend on Realtime alone.
+### 2.6 WisePOS E Availability and Safe Recovery
+1. The POS invokes `terminal-payment-availability` with authenticated POS-device credentials. The function retrieves the exact Stripe Reader before making an availability decision and synchronizes `stripe_terminal_readers.last_synced_at` only after that retrieval succeeds.
+2. The response exposes explicit states: `READY`, `READER_OFFLINE`, `READER_BUSY`, `STALE_PAYMENT_REQUEST`, `TERMINAL_NOT_CONFIGURED`, `ACTIVE_CURRENT_PAYMENT`, and `READER_SYNC_FAILED`, together with Reader timestamps, action status, active request ID, and request age.
+3. A second server-side Reader check occurs in `start-server-driven-terminal-payment` after the order/request exists. If the Reader went offline, the pending order remains recoverable and is not duplicated on retry.
+4. Requests older than the safe recovery timeout are reconciled one at a time. The recovery function retrieves the exact PaymentIntent and Reader state before changing a request.
+5. `succeeded` PaymentIntents use `complete_terminal_payment`; `processing` and `requires_capture` are preserved as `ACTIVE_CURRENT_PAYMENT`; cancellation is followed by a fresh PaymentIntent retrieval, and only an exact Stripe `canceled` result permits Cashmint to mark the request `expired`.
+6. A database recovery lease (`claim_terminal_payment_recovery` / `release_terminal_payment_recovery`) prevents overlapping polls from reconciling the same request. A failed historical reconciliation is returned as a safe recovery result and does not turn the whole availability endpoint into HTTP 400.
+7. Stripe webhook processing remains the final financial authority. No browser state, cached Reader action, stale database row, or availability poll can create a paid payment or trigger receipt printing.
 
-### 2.7 Android Bridge Enrollment Process
+### 2.7 Card Availability Compatibility RPC
+1. `terminal_payment_availability(store_id, pos_device_id)` remains a secured, HTTP-200 snapshot RPC for compatibility and unconfigured stores.
+2. It reports the same explicit reason model from persisted state, but important WisePOS E decisions use the Stripe-authoritative Edge Function rather than trusting only cached `action_status`.
+3. The Android Bridge availability path remains separate and disabled/non-primary for the active WisePOS E configuration.
+
+### Legacy Android Bridge Enrollment Process
 1. An authorized Backoffice user generates an enrollment code through `create-terminal-enrollment-code`.
 2. The code is short-lived and intended for provisioning the Android bridge without sharing store staff credentials.
 3. The Android bridge opens its enrollment UI and submits:
@@ -148,7 +147,7 @@ sequenceDiagram
 6. After enrollment, Android can refresh its own session without exposing any Stripe secret key or Supabase service-role key.
 7. Reset enrollment clears the local bridge credentials and requires a fresh code before the bridge can operate again.
 
-### 2.8 WisePad 3 Discovery and Connection Process
+### Legacy WisePad 3 Discovery and Connection Process
 1. The operator turns on the WisePad 3 and keeps it near the Android phone.
 2. Android initializes Stripe Terminal SDK with a server-generated connection token from `terminal-connection-token`.
 3. The bridge uses physical WisePad 3 discovery only; the simulated reader path is not part of live operation.
@@ -158,29 +157,19 @@ sequenceDiagram
 7. If Stripe reports an already-connected/stale reader state, Android attempts a safe disconnect/reconnect path.
 8. If discovery is cancelled by the user, the app reports cancellation but does not create or replay any payment.
 
-### 2.9 Card Payment Request Creation
+### 2.9 Server-Driven Card Payment Request Creation
 1. The cashier builds a cart and chooses Visa/Card.
-2. The browser creates a pending accounting order and a `payment_requests` row. Amount, currency, restaurant, location, order ID, and payment configuration are server-derived.
-3. The browser shows a payment modal instructing the customer to use the WisePad 3.
-4. The POS waits for server-confirmed status changes through Realtime and polling.
-5. The POS does not mark the order as paid, even if the Android bridge reports local SDK success.
+2. The POS runs `terminal-payment-availability` before creating a card order. Offline, busy, stale, unconfigured, and sync-failure states preserve the cart and do not create duplicate orders.
+3. The browser creates a pending accounting order and a `payment_requests` row. Amount, currency, restaurant, location, order ID, and payment configuration are server-derived.
+4. The POS invokes `start-server-driven-terminal-payment`, which retrieves the exact Reader, creates or reuses the PaymentIntent, and starts the WisePOS E Reader action.
+5. The POS waits for server-confirmed status changes through `retrieve-terminal-payment-status`, Realtime, and polling. It never marks the order paid from browser or Reader UI state.
 
-### 2.10 Atomic Claim and One Active Payment
-1. The Android bridge periodically checks for eligible `payment_requests` for its assigned location.
-2. The bridge uses `claim_terminal_payment_request` to atomically claim one request.
-3. The claim RPC prevents two bridge devices from processing the same request.
-4. Android stores the active request ID locally while processing.
-5. The bridge keeps one payment active at a time. New pending requests wait until the active request is released, completed, failed, cancelled, or expires.
-
-### 2.11 PaymentIntent Creation and Reader Collection
-1. After claiming a request, Android calls `create-terminal-payment-intent`.
-2. The Edge Function loads the request and configuration, derives amount/currency/server metadata, and creates a Stripe PaymentIntent using server-side credentials.
-3. The function stores the Stripe PaymentIntent ID and client secret on `payment_requests`.
-4. Android retrieves the PaymentIntent using Stripe Terminal SDK.
-5. Android calls `collectPaymentMethod`, which moves interaction to the WisePad 3 screen.
-6. The customer taps, inserts, or swipes the card/Apple Pay on the WisePad 3.
-7. Android then calls `processPayment`.
-8. After SDK processing returns success, Android marks the request `unknown` and waits for Stripe webhook confirmation. This prevents Android from being the final payment authority.
+### 2.10 Server-Driven Reader Action and Recovery
+1. `start-server-driven-terminal-payment` performs a second authoritative Reader check after the pending request exists, preventing a Reader disconnect between preflight and start from creating another attempt.
+2. The Edge Function calls Stripe's `process_payment_intent` for the configured WisePOS E and persists the Reader action ID/status without exposing Stripe secrets or client secrets to the browser.
+3. `terminal-payment-availability` retrieves the exact Reader and at most one stale candidate per poll. A database recovery lease prevents overlapping polls from reconciling the same request.
+4. Recovery retrieves the exact PaymentIntent before mutation. `succeeded` uses `complete_terminal_payment`; `processing` and `requires_capture` remain active; cancellation is followed by a fresh retrieval and only confirmed `canceled` permits expiry.
+5. Stripe webhook processing remains the final financial authority. No recovery path creates a paid payment or receipt.
 
 ### 2.12 Webhook Confirmation and Order Completion
 1. Stripe sends webhook events to `stripe-terminal-webhook`.
@@ -752,7 +741,7 @@ Coordinates advanced option configurations and AI menu imports.
 
 ### E. Hardware, HubRise, and Payment Configuration (`src/admin/IntegrationSettings.jsx`)
 - Provides input fields for the local printer IP address (optimized for `Epson TM-T20IV`).
-- The active card-payment configuration is the server-held `stripe_android_bridge` location configuration. The browser does not store Stripe credentials or reader secrets.
+- The active card-payment configuration is the server-held `stripe_server_driven` WisePOS E location configuration. The browser does not store Stripe credentials, Reader secrets, or PaymentIntent client secrets.
 - Incorporates a test print button that prints a demo receipt layout and triggers cash drawer kicks.
 
 ---
@@ -772,6 +761,9 @@ Coordinates advanced option configurations and AI menu imports.
 6. **`create-terminal-enrollment-code`**: Creates a 15-minute, single-use Android bridge enrollment code for an authorized store member. Its CORS configuration includes `x-client-info`, required by the Supabase browser client.
 7. **`register-terminal-device`**: Redeems that code, creates a dedicated bridge identity and `terminal_devices` record, and returns the short-lived bridge session plus reader location configuration to the Android app.
 8. **Terminal payment functions**: `terminal-connection-token`, `create-terminal-payment-intent`, `retrieve-terminal-payment-status`, and related functions keep sensitive Stripe actions and final payment confirmation on the server.
+9. **`start-server-driven-terminal-payment`**: Retrieves the WisePOS E, creates or reuses the server-side PaymentIntent, starts the Reader action, and persists the action metadata without exposing client secrets.
+10. **`terminal-payment-availability`**: Authenticates the POS/store caller, retrieves the exact Stripe Reader, synchronizes the cached Reader snapshot, reports explicit availability states, and performs one leased stale-request recovery candidate per poll.
+11. **Recovery authority**: `claim_terminal_payment_recovery` and `release_terminal_payment_recovery` provide the database lease. A request is expired only after a fresh Stripe PaymentIntent status of exactly `canceled`; `succeeded`, `processing`, and `requires_capture` remain financially protected.
 
 ---
 
@@ -779,6 +771,15 @@ Coordinates advanced option configurations and AI menu imports.
 - Provides date-range CSV exports for transaction lines, VAT summaries, and payment summaries using the tenant-scoped accounting views.
 - Finalizes a single-day closing through `finalize_daily_closing` and opens a print-ready A4 report that users can save as PDF.
 - Reports format numbers consistently and download UTF-8-BOM, semicolon-separated CSV files suitable for common accounting tools.
+
+### H.1 Current WisePOS E Files
+- `supabase/functions/terminal-payment-availability/index.ts`: Stripe-authoritative Reader availability and one-at-a-time stale request recovery.
+- `supabase/functions/start-server-driven-terminal-payment/index.ts`: server-side PaymentIntent and WisePOS E action orchestration.
+- `supabase/functions/retrieve-terminal-payment-status/index.ts`: Stripe PaymentIntent/Reader reconciliation during an active payment.
+- `supabase/functions/stripe-terminal-webhook/index.ts`: final Stripe event handling and trusted completion.
+- `supabase/migrations/20260724130756_terminal_authoritative_availability.sql`: explicit availability state contract.
+- `supabase/migrations/20260724132014_terminal_recovery_lease.sql` and `20260724132050_terminal_recovery_lease_type_fix.sql`: recovery claim lease and idempotency guard.
+- `src/utils/terminalAuthoritativeAvailability.test.js`: regression guards for financial-state preservation, cancellation races, overlapping polls, and provider separation.
 
 ---
 
@@ -841,9 +842,10 @@ Coordinates advanced option configurations and AI menu imports.
 - `save_store_onboarding` checks membership inside a security-definer RPC. Anonymous execution is revoked; authenticated mapped users can update only their own store's onboarding state.
 
 ### P. Active Stripe Terminal Configuration
-- The active Stripe system is the Android bridge (`stripe_android_bridge`), not Stripe Connect. Stripe account/location data and secrets are server-held in the location payment configuration and Supabase Edge Function environment; neither the POS nor Backoffice browser stores them.
-- A Backoffice user generates a one-time enrollment code. The Android bridge redeems it, receives a dedicated bridge session, sends heartbeats, claims server-created payment requests, operates the Bluetooth reader, and posts payment status back through Supabase.
-- Stripe Connect tables and Edge Functions are retained in the codebase but are inactive for the current POS payment workflow. The legacy local Stripe form is likewise inactive.
+- The active Stripe system is server-driven WisePOS E (`stripe_server_driven`), not the Android Bridge and not Stripe Connect. Stripe account/location data and secrets are server-held in the location payment configuration and Supabase Edge Function environment; neither the POS nor Backoffice browser stores them.
+- The POS runs a fresh availability preflight before card order creation and the start function repeats the authoritative Reader check after the pending order/request exists.
+- Stripe webhook events and the trusted completion RPC are final financial authority. PaymentIntent retrieval, Reader action reconciliation, cancellation, order completion, and receipt eligibility remain server-side.
+- Stripe Connect tables/functions and the Android Bridge are retained for compatibility but are inactive for the current Picabeans payment workflow. Provider changes require explicit configuration; recovery never enables Android Bridge or changes priority.
 
 ### Q. Accounting Groups and VAT Profiles
 - Products use an Accounting Group rather than a manually entered VAT percentage. Each group maps to a Tax Profile that resolves a rate for `dine_in`, `takeaway`, `delivery`, or a fallback. The POS currently lets cashiers choose only Dine-in and Takeaway.
@@ -896,3 +898,4 @@ Coordinates advanced option configurations and AI menu imports.
 23. **Core Table RLS Hardening & Privilege Revokes:** Enforced Row Level Security across core POS tables (`categories`, `products`, `pos_devices`, `cashier_sessions`), revoked dangerous table privileges (`TRUNCATE`, `TRIGGER`, `REFERENCES`), and restricted unauthenticated REST table access.
 24. **POS Catalog Store Payload Whitelisting:** Sanitized `get_pos_catalog(uuid)` with `search_path = public, pg_temp` and explicit `jsonb_build_object` field whitelisting (`id`, `name`, `business_type`, `logo_url`, `theme_color`, `primary_color`, `bg_color`, `banner_url`, `theme_config`, `onboarding_status`, `onboarding_completed`, `split_payment_enabled`) to prevent accidental key exposure.
 25. **Crash-Proof & Retry-Safe Checkout Flow:** Fixed `ReferenceError` crashes, separated pre-order creation errors from post-order receipt printing warnings, cleared cart state atomically on order creation, and eliminated duplicate order resubmissions. Added comprehensive Vitest regression test suite (`checkoutRegression.test.js`).
+26. **WisePOS E Financially Safe Recovery:** Added explicit Reader availability states, fresh Stripe Reader preflight, one-at-a-time stale recovery, database recovery leases, post-cancellation PaymentIntent retrieval, preservation of `succeeded`/`processing`/`requires_capture`, and expiry only after Stripe confirms `canceled`. Android Bridge remains disabled/non-primary.
