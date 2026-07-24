@@ -15,6 +15,9 @@ export default function StoresManagement({ showNotification, isArabic, onSelectS
   const [businessType, setBusinessType] = useState('restaurant');
   const [logoUrl, setLogoUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [deleteStore, setDeleteStore] = useState(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
 
   // Advanced Settings (God Mode) Modal states
   const [isGodModalOpen, setIsGodModalOpen] = useState(false);
@@ -160,54 +163,33 @@ export default function StoresManagement({ showNotification, isArabic, onSelectS
     }
   };
 
-  const handleDeleteStore = async (storeId, name) => {
-    const confirmMsg = isArabic 
-      ? `هل أنت متأكد من حذف متجر "${name}"؟ سيتم حذف جميع البيانات المرتبطة به.`
-      : `Are you sure you want to delete store "${name}"? All associated data will be deleted.`;
-      
-    if (!window.confirm(confirmMsg)) return;
-
+  const handleDeleteStore = async () => {
+    if (!deleteStore || deleteSubmitting || deleteConfirmation !== deleteStore.name) return;
     try {
-      setLoading(true);
-
-      // 1. Fetch all store users to delete them from Supabase Auth
-      const { data: storeUsers, error: fetchUsersErr } = await supabase
-        .from('store_users')
-        .select('user_id')
-        .eq('store_id', storeId);
-
-      if (fetchUsersErr) throw fetchUsersErr;
-
-      // 2. Invoke admin-delete-user Edge Function for each user to clean up auth.users
-      if (storeUsers && storeUsers.length > 0) {
-        for (const u of storeUsers) {
-          try {
-            const { error: deleteUserErr } = await supabase.functions.invoke('admin-delete-user', {
-              body: { user_id: u.user_id }
-            });
-            if (deleteUserErr) {
-              console.error(`Failed to clean up auth user ${u.user_id}:`, deleteUserErr);
-            }
-          } catch (funcErr) {
-            console.error(`Error invoking admin-delete-user function for user ${u.user_id}:`, funcErr);
-          }
-        }
-      }
-
-      // 3. Delete the store record
-      const { error } = await supabase
-        .from('stores')
-        .delete()
-        .eq('id', storeId);
-
+      setDeleteSubmitting(true);
+      const { data, error } = await supabase.rpc('superadmin_delete_store', {
+        p_store_id: deleteStore.id,
+        p_confirmation_name: deleteConfirmation
+      });
       if (error) throw error;
-      showNotification(isArabic ? 'تم حذف المتجر بنجاح' : 'Store tenant deleted successfully');
-      fetchStores();
+      if (!data?.deleted) throw new Error('STORE_DELETE_NOT_CONFIRMED');
+      setStores(current => current.filter(store => store.id !== deleteStore.id));
+      await fetchStores();
+      setDeleteStore(null);
+      setDeleteConfirmation('');
+      showNotification(isArabic ? 'تم حذف المتجر بنجاح' : 'Store deleted successfully');
     } catch (err) {
       console.error('Error deleting store:', err);
-      const errMsg = err?.message || err?.details || (isArabic ? 'فشل حذف المتجر' : 'Failed to delete store tenant');
-      showNotification(isArabic ? `فشل حذف المتجر: ${errMsg}` : `Failed to delete store tenant: ${errMsg}`, 'error');
-      setLoading(false);
+      const raw = [err?.message, err?.details, err?.hint].filter(value => typeof value === 'string').join(' ');
+      const code = ['STORE_HAS_FINANCIAL_HISTORY', 'ACTIVE_TERMINAL_PAYMENT_EXISTS', 'CONFIRMATION_NAME_MISMATCH'].find(value => raw.includes(value));
+      const messages = {
+        STORE_HAS_FINANCIAL_HISTORY: ['This store contains sales or payment history and cannot be permanently deleted.', 'يحتوي هذا المتجر على سجل مبيعات أو مدفوعات ولا يمكن حذفه نهائياً.'],
+        ACTIVE_TERMINAL_PAYMENT_EXISTS: ['An active terminal payment must be completed or cancelled first.', 'يجب إنهاء أو إلغاء عملية الدفع النشطة أولاً.'],
+        CONFIRMATION_NAME_MISMATCH: ['The store name does not match.', 'اسم المتجر المكتوب غير مطابق.']
+      };
+      showNotification(code ? messages[code][isArabic ? 1 : 0] : (isArabic ? 'فشل حذف المتجر. يرجى المحاولة مرة أخرى.' : 'The store could not be deleted. Please try again.'), 'error');
+    } finally {
+      setDeleteSubmitting(false);
     }
   };
 
@@ -328,7 +310,7 @@ export default function StoresManagement({ showNotification, isArabic, onSelectS
                           <Edit2 className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => handleDeleteStore(store.id, store.name)}
+                          onClick={() => { setDeleteStore(store); setDeleteConfirmation(''); }}
                           className="p-2 hover:bg-slate-800 text-slate-450 hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
                           title={isArabic ? "حذف" : "Delete Store"}
                         >
@@ -572,6 +554,24 @@ export default function StoresManagement({ showNotification, isArabic, onSelectS
               </div>
             </form>
 
+          </div>
+        </div>
+      )}
+
+      {deleteStore && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-[300] flex items-center justify-center p-4" dir={isArabic ? "rtl" : "ltr"}>
+          <div className="bg-slate-900 border border-rose-500/30 rounded-3xl max-w-md w-full shadow-2xl p-6 space-y-5 text-right">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+              <h3 className="font-extrabold text-base text-rose-300">{isArabic ? 'حذف المتجر نهائياً؟' : 'Permanently delete store?'}</h3>
+              <button type="button" onClick={() => setDeleteStore(null)} disabled={deleteSubmitting} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-sm text-slate-300">{isArabic ? 'سيتم حذف الكتالوج والأجهزة والإعدادات.' : 'The catalog, devices, and store configuration will be permanently deleted.'}</p>
+            <p className="text-xs text-slate-400">{isArabic ? 'اكتب اسم المتجر بالضبط للمتابعة:' : 'Type the exact store name to continue:'} <span className="font-bold text-white">{deleteStore.name}</span></p>
+            <input autoFocus value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') handleDeleteStore(); }} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none focus:border-rose-400" disabled={deleteSubmitting} />
+            <div className="flex justify-end gap-3">
+              <button type="button" onClick={() => setDeleteStore(null)} disabled={deleteSubmitting} className="px-4 py-2.5 rounded-xl text-sm font-bold text-slate-300 hover:bg-slate-800">{isArabic ? 'إلغاء' : 'Cancel'}</button>
+              <button type="button" onClick={handleDeleteStore} disabled={deleteSubmitting || deleteConfirmation !== deleteStore.name} className="px-4 py-2.5 rounded-xl bg-rose-600 text-white text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed">{deleteSubmitting ? (isArabic ? 'جاري الحذف...' : 'Deleting...') : (isArabic ? 'حذف المتجر' : 'Delete store')}</button>
+            </div>
           </div>
         </div>
       )}

@@ -1153,6 +1153,7 @@ export default function App() {
   // The iPad never connects to a reader. It only enables card checkout when a
   // registered Android bridge has recently reported an attached reader.
   useEffect(() => {
+    if (!isPosMode) return;
     const storeId = store?.id || deviceAuth?.storeId || localStorage.getItem('store_id');
     const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id');
     if (!storeId) return;
@@ -1191,7 +1192,7 @@ export default function App() {
     check();
     const interval = setInterval(check, 5000);
     return () => { alive = false; clearInterval(interval); };
-  }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId, resumeActiveTerminalPayment]);
+  }, [store?.id, deviceAuth?.storeId, deviceAuth?.deviceId, resumeActiveTerminalPayment, isPosMode]);
 
   // Backoffice PIN Gate & OTP Recovery States
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
