@@ -43,20 +43,44 @@ jobs:
       - name: Build Store
         run: npm run build:store
 
-      - name: Configure SSH
+      - name: Configure and verify SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY_B64 }}
           SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          SSH_USER: ${{ secrets.HOSTINGER_SSH_USER }}
           SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          set -euo pipefail
 
-          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
 
-          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          printf '%s' "$SSH_PRIVATE_KEY_B64" \
+            | base64 --decode \
+            > "$HOME/.ssh/cashmint_hostinger_deploy"
+
+          chmod 600 "$HOME/.ssh/cashmint_hostinger_deploy"
+
+          ssh-keygen -y \
+            -f "$HOME/.ssh/cashmint_hostinger_deploy" \
+            > /dev/null
+
+          ssh-keyscan \
+            -p "$SSH_PORT" \
+            "$SSH_HOST" \
+            >> "$HOME/.ssh/known_hosts"
+
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+          ssh \
+            -i "$HOME/.ssh/cashmint_hostinger_deploy" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 \
+            -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "echo SSH_CONNECTION_SUCCESS"
 
       - name: Deploy all Cashmint builds
         env:
@@ -69,43 +93,87 @@ jobs:
         run: |
           set -euo pipefail
 
+          SSH_ARGS=(
+            -i "$HOME/.ssh/cashmint_hostinger_deploy"
+            -o IdentitiesOnly=yes
+            -o BatchMode=yes
+            -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=20
+            -p "$SSH_PORT"
+          )
+
           deploy_build() {
             SOURCE_DIR="$1"
             TARGET_DIR="$2"
             SITE_NAME="$3"
 
-            echo "Deploying $SITE_NAME from $SOURCE_DIR to $TARGET_DIR"
+            echo "Deploying $SITE_NAME"
+            echo "Source: $SOURCE_DIR"
+            echo "Target: $TARGET_DIR"
 
-            test -d "$SOURCE_DIR"
+            if [ ! -d "$SOURCE_DIR" ]; then
+              echo "Build directory does not exist: $SOURCE_DIR"
+              exit 1
+            fi
 
-            ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "
-              test -d '$TARGET_DIR' &&
-              rm -rf '$TARGET_DIR/assets' &&
-              rm -f '$TARGET_DIR/index.html' &&
-              rm -f '$TARGET_DIR/sw.js' &&
-              rm -f '$TARGET_DIR/registerSW.js' &&
+            if [ ! -f "$SOURCE_DIR/index.html" ]; then
+              echo "Missing index.html in: $SOURCE_DIR"
+              exit 1
+            fi
+
+            if [ ! -d "$SOURCE_DIR/assets" ]; then
+              echo "Missing assets directory in: $SOURCE_DIR"
+              exit 1
+            fi
+
+            ssh "${SSH_ARGS[@]}" "$SSH_USER@$SSH_HOST" "
+              set -e
+
+              if [ ! -d '$TARGET_DIR' ]; then
+                echo 'Target directory does not exist: $TARGET_DIR'
+                exit 1
+              fi
+
+              rm -rf '$TARGET_DIR/assets'
+              rm -f '$TARGET_DIR/index.html'
+              rm -f '$TARGET_DIR/sw.js'
+              rm -f '$TARGET_DIR/registerSW.js'
               rm -f '$TARGET_DIR'/workbox-*.js
+              rm -f '$TARGET_DIR/manifest.webmanifest'
             "
 
-            tar -C "$SOURCE_DIR" -czf - . | \
-              ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
-              "tar -xzf - -C '$TARGET_DIR'"
+            tar -C "$SOURCE_DIR" -czf - . \
+              | ssh "${SSH_ARGS[@]}" "$SSH_USER@$SSH_HOST" \
+                "tar -xzf - -C '$TARGET_DIR'"
 
-            ssh -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" "
-              test -f '$TARGET_DIR/index.html' &&
+            ssh "${SSH_ARGS[@]}" "$SSH_USER@$SSH_HOST" "
+              set -e
+
+              test -f '$TARGET_DIR/index.html'
               test -d '$TARGET_DIR/assets'
-            "
 
-            echo "$SITE_NAME deployed successfully"
+              echo '$SITE_NAME deployed successfully'
+            "
           }
 
-          deploy_build "dist-master" "$MASTER_PATH" "cashmint.online"
-          deploy_build "dist-pos" "$POS_PATH" "cashmint.net"
-          deploy_build "dist-store" "$STORE_PATH" "cashmint.store"
+          deploy_build \
+            "dist-master" \
+            "$MASTER_PATH" \
+            "cashmint.online"
+
+          deploy_build \
+            "dist-pos" \
+            "$POS_PATH" \
+            "cashmint.net"
+
+          deploy_build \
+            "dist-store" \
+            "$STORE_PATH" \
+            "cashmint.store"
 
       - name: Deployment summary
         run: |
-          echo "Deployment completed:"
+          echo "Cashmint deployment completed successfully."
           echo "dist-master -> cashmint.online"
           echo "dist-pos -> cashmint.net"
           echo "dist-store -> cashmint.store"
