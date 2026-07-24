@@ -665,6 +665,10 @@ export default function App() {
       showNotification(isArabic ? 'يوجد دفع بالبطاقة قيد التنفيذ.' : 'A card payment is already in progress.', 'info');
       return;
     }
+    if (terminalAvailability.configured === false) {
+      showNotification(isArabic ? 'جهاز WisePOS E غير مهيأ لهذا المتجر.' : 'WisePOS E is not configured for this store.', 'info');
+      return;
+    }
     const deviceId = deviceAuth?.deviceId || localStorage.getItem('device_id') || null;
     if (!deviceId) {
       showNotification(isArabic ? 'جهاز نقطة البيع غير متاح.' : 'The POS device is not available.', 'error');
@@ -722,6 +726,10 @@ export default function App() {
     }
     if (!manualSaleAccountingGroupId) {
       setManualSaleError(isArabic ? 'اختر المجموعة المحاسبية والضريبية.' : 'Choose an accounting/VAT group.');
+      return;
+    }
+    if (terminalAvailability.configured === false) {
+      setManualSaleError(isArabic ? 'جهاز WisePOS E غير مهيأ لهذا المتجر.' : 'WisePOS E is not configured for this store.');
       return;
     }
     if (terminalAvailability.providerType !== 'stripe_server_driven' || !terminalAvailability.available) {
@@ -1152,17 +1160,21 @@ export default function App() {
     const check = async () => {
       const { data, error } = await supabase.rpc('terminal_payment_availability', { p_store_id: storeId, p_pos_device_id: deviceId || null });
       if (alive) {
+        const terminalNotConfigured = data?.configured === false || data?.reason === 'TERMINAL_NOT_CONFIGURED' || error?.code === 'TERMINAL_NOT_CONFIGURED';
+        if (error && !terminalNotConfigured) console.error('Terminal availability check failed:', error);
         setTerminalAvailability(prev => {
           const nextAvailable = !error && data?.available === true;
           const nextReaderOnline = !error && data?.reader_online === true;
           const nextActivePayment = !error && data?.active_payment === true;
           const nextProvider = data?.provider_type || 'none';
-          if (prev.checked && prev.available === nextAvailable && prev.readerOnline === nextReaderOnline && prev.activePayment === nextActivePayment && prev.providerType === nextProvider) {
+          const nextConfigured = terminalNotConfigured ? false : (!error && data?.configured === true ? true : null);
+          if (prev.checked && prev.available === nextAvailable && prev.configured === nextConfigured && prev.readerOnline === nextReaderOnline && prev.activePayment === nextActivePayment && prev.providerType === nextProvider) {
             return prev;
           }
           return {
             checked: true,
             available: nextAvailable,
+            configured: nextConfigured,
             readerOnline: nextReaderOnline,
             activePayment: nextActivePayment,
             providerType: nextProvider,
@@ -2555,6 +2567,10 @@ export default function App() {
     const val = validateSplitAmounts(totalAmount, splitCashInput, splitCardInput, isArabic);
     if (!val.valid) {
       showNotification(val.error, 'error');
+      return;
+    }
+    if (terminalAvailability.configured === false) {
+      showNotification(isArabic ? 'جهاز WisePOS E غير مهيأ لهذا المتجر.' : 'WisePOS E is not configured for this store.', 'info');
       return;
     }
     if (!terminalAvailability.checked || terminalAvailability.providerType !== 'stripe_server_driven') {
@@ -4109,12 +4125,17 @@ export default function App() {
             <button
               type="button"
               onClick={handleOpenManualSale}
-              disabled={manualSaleSubmitting || Boolean(activePaymentRequestId)}
+              disabled={manualSaleSubmitting || Boolean(activePaymentRequestId) || terminalAvailability.configured === false}
               className="w-full mb-2 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/25 text-amber-700 dark:text-amber-300 font-extrabold text-xs hover:bg-amber-100 dark:hover:bg-amber-950/40 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
             >
               <CreditCard className="w-4 h-4" />
               <span>{isArabic ? MANUAL_SALE_LABEL_AR : 'Manual Sale'}</span>
             </button>
+            {terminalAvailability.configured === false && (
+              <p className="mb-2 text-center text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                {isArabic ? 'جهاز WisePOS E غير مهيأ لهذا المتجر.' : 'WisePOS E is not configured for this store.'}
+              </p>
+            )}
 
             {/* Primary Checkout Button */}
             <button
@@ -4202,7 +4223,7 @@ export default function App() {
               ) : (
                 <div className="flex gap-2 pt-1">
                   <button type="button" onClick={resetManualSaleForm} disabled={manualSaleSubmitting} className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-800 dark:text-white font-extrabold text-xs disabled:opacity-50">{isArabic ? 'إلغاء' : 'Cancel'}</button>
-                  <button type="submit" disabled={manualSaleSubmitting || !manualSaleAccountingGroupId} className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-extrabold text-xs">{manualSaleSubmitting ? (isArabic ? 'جاري الإنشاء...' : 'Creating...') : (isArabic ? 'الدفع على WisePOS E' : 'Pay on WisePOS E')}</button>
+                  <button type="submit" disabled={manualSaleSubmitting || !manualSaleAccountingGroupId || terminalAvailability.configured === false} className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-extrabold text-xs">{manualSaleSubmitting ? (isArabic ? 'جاري الإنشاء...' : 'Creating...') : (isArabic ? 'الدفع على WisePOS E' : 'Pay on WisePOS E')}</button>
                 </div>
               )}
             </div>

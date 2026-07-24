@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+﻿import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -20,6 +20,7 @@ const splitTerminalVerificationMigration = read('../../supabase/migrations/20260
 const manualSaleMigration = read('../../supabase/migrations/20260723234408_add_manual_card_sale.sql');
 const secureManualSaleMigration = read('../../supabase/migrations/20260724002316_secure_manual_card_sale_device_authorization.sql');
 const legacyManualSaleRemovalMigration = read('../../supabase/migrations/20260724002425_remove_legacy_manual_card_sale_overload.sql');
+const terminalAvailabilityMigration = read('../../supabase/migrations/20260724013431_fix_terminal_payment_availability_unconfigured.sql');
 const manualSaleUtilsSource = read('./manualSaleUtils.js');
 const terminalAttemptSource = read('./terminalAttempt.js');
 
@@ -231,10 +232,11 @@ describe('WisePOS E server-driven regression guards', () => {
   });
 
   it('preserves Manual Sale encoding, cents, idempotency, and one payment row', () => {
-    expect(secureManualSaleMigration).toContain("'بيع يدوي'");
-    expect(secureManualSaleMigration).not.toContain('Ø¨ÙŠØ¹ ÙŠØ¯ÙˆÙŠ');
-    expect(manualSaleUtilsSource).toContain("MANUAL_SALE_LABEL_AR = 'بيع يدوي'");
-    expect(manualSaleUtilsSource).not.toContain('Ø¨ÙŠØ¹ ÙŠØ¯ÙˆÙŠ');
+    const manualSaleArabic = '\u0628\u064a\u0639 \u064a\u062f\u0648\u064a';
+    expect(secureManualSaleMigration).toContain(`'${manualSaleArabic}'`);
+    expect(secureManualSaleMigration).not.toContain('\u00d8\u00a8\u00d9\u0160\u00d8\u00b9');
+    expect(manualSaleUtilsSource).toContain(`MANUAL_SALE_LABEL_AR = '${manualSaleArabic}'`);
+    expect(manualSaleUtilsSource).not.toContain('\u00c3\u0098\u00c2\u00a8');
     expect(secureManualSaleMigration).toContain("'amount_cents', p_amount_cents");
     expect(secureManualSaleMigration).toContain("'is_duplicate', true");
     expect((secureManualSaleMigration.match(/insert into public\.payments/gi) || []).length).toBe(1);
@@ -398,5 +400,35 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(integrationSource).toContain("'stripe_android_bridge'");
     expect(manageSource).not.toContain('set_active_terminal_provider');
     expect(manageSource).not.toContain("from('terminal_devices')");
+  });
+
+  it('authorizes terminal availability before optional restaurant configuration lookup', () => {
+    const authorization = terminalAvailabilityMigration.indexOf("IF NOT (v_is_service_role OR v_is_superadmin OR v_is_store_member OR v_is_active_device)");
+    const locationLookup = terminalAvailabilityMigration.indexOf('FROM public.restaurant_locations');
+    expect(authorization).toBeGreaterThan(-1);
+    expect(locationLookup).toBeGreaterThan(authorization);
+    expect(terminalAvailabilityMigration).toContain("su.store_id = p_store_id");
+    expect(terminalAvailabilityMigration).toContain("su.user_id = (SELECT auth.uid())");
+    expect(terminalAvailabilityMigration).toContain("d.store_id = p_store_id");
+    expect(terminalAvailabilityMigration).toContain("d.status::text = 'active'");
+    expect(terminalAvailabilityMigration).toContain("v_is_service_role BOOLEAN := (SELECT auth.role()) = 'service_role'");
+    expect(terminalAvailabilityMigration).toContain('public.is_superadmin()');
+    expect(terminalAvailabilityMigration).not.toContain('is_location_member(v_location.id)');
+  });
+
+  it('returns a safe normal unavailable state for missing location or primary provider', () => {
+    const unavailable = "'available', false,\n      'configured', false,\n      'provider_type', 'none',\n      'reader_online', false,\n      'reader_busy', false,\n      'active_payment', false,\n      'reason', 'TERMINAL_NOT_CONFIGURED'";
+    expect((terminalAvailabilityMigration.match(new RegExp(unavailable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length).toBe(2);
+    expect(terminalAvailabilityMigration).toContain("'configured', true");
+  });
+
+  it('treats configured:false polling as normal and disables WisePOS E Manual Sale submission', () => {
+    const notConfiguredArabic = '\u062c\u0647\u0627\u0632 WisePOS E \u063a\u064a\u0631 \u0645\u0647\u064a\u0623 \u0644\u0647\u0630\u0627 \u0627\u0644\u0645\u062a\u062c\u0631.';
+    expect(appSource).toContain('data?.configured === false');
+    expect(appSource).toContain("error && !terminalNotConfigured");
+    expect(appSource).toContain("WisePOS E is not configured for this store.");
+    expect(appSource).toContain(notConfiguredArabic);
+    expect(appSource).toContain('terminalAvailability.configured === false');
+    expect(appSource).toContain('terminalAvailability.configured === false}');
   });
 });
