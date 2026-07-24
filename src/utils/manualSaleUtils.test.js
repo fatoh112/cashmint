@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { formatManualSaleAmount, parseManualSaleAmountToCents } from './manualSaleUtils';
+import { formatManualSaleAmount, MANUAL_SALE_LABEL_AR, parseManualSaleAmountToCents } from './manualSaleUtils';
 
 describe('manual sale amount validation', () => {
   test.each([
@@ -17,5 +17,9 @@ describe('manual sale amount validation', () => {
 
   test('formats a positive amount for the configured currency', () => {
     expect(formatManualSaleAmount(1250, 'EUR')).toMatch(/12[,.]50/);
+  });
+
+  test('uses the exact Arabic Manual Sale label', () => {
+    expect(MANUAL_SALE_LABEL_AR).toBe('بيع يدوي');
   });
 });

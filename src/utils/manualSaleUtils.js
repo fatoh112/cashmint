@@ -1,3 +1,6 @@
+export const MANUAL_SALE_LABEL = 'Manual Sale';
+export const MANUAL_SALE_LABEL_AR = 'بيع يدوي';
+
 export function parseManualSaleAmountToCents(value) {
   const text = String(value ?? '').trim();
   if (!/^\d+(?:\.\d{1,2})?$/.test(text)) return null;

@@ -18,6 +18,9 @@ const activePaymentMigration = read('../../supabase/migrations/20260723203259_ex
 const cancellationRecoveryMigration = read('../../supabase/migrations/20260723212748_fix_terminal_cancellation_recovery.sql');
 const splitTerminalVerificationMigration = read('../../supabase/migrations/20260723224030_fix_split_terminal_verification.sql');
 const manualSaleMigration = read('../../supabase/migrations/20260723234408_add_manual_card_sale.sql');
+const secureManualSaleMigration = read('../../supabase/migrations/20260724002316_secure_manual_card_sale_device_authorization.sql');
+const legacyManualSaleRemovalMigration = read('../../supabase/migrations/20260724002425_remove_legacy_manual_card_sale_overload.sql');
+const manualSaleUtilsSource = read('./manualSaleUtils.js');
 const terminalAttemptSource = read('./terminalAttempt.js');
 
 describe('WisePOS E server-driven regression guards', () => {
@@ -207,6 +210,35 @@ describe('WisePOS E server-driven regression guards', () => {
     expect(manualSaleMigration).toContain("'card', 'pending'");
     expect(manualSaleMigration).toContain("coalesce(p.is_system, false) = false");
     expect(manualSaleMigration).toContain('orders_manual_sale_idempotency_uidx');
+  });
+
+  it('requires POS device possession or an explicit trusted authorization path for Manual Sale', () => {
+    expect(appSource).toContain('p_pos_device_token: localStorage.getItem(\'device_token\') || null');
+    expect(secureManualSaleMigration).toContain('p_pos_device_token uuid');
+    expect(secureManualSaleMigration).toContain("where d.id = p_pos_device_id and d.status::text = 'active'");
+    expect(secureManualSaleMigration).toContain("and s.store_id = v_device.store_id");
+    expect(secureManualSaleMigration).toContain('p_pos_device_token is not null');
+    expect(secureManualSaleMigration).toContain('v_device.device_token = p_pos_device_token');
+    expect(secureManualSaleMigration).toContain('v_is_service_role');
+    expect(secureManualSaleMigration).toContain('v_is_superadmin');
+    expect(secureManualSaleMigration).toContain('v_is_store_member');
+    expect(secureManualSaleMigration).toContain('v_session.device_id = v_device.id');
+    expect(secureManualSaleMigration).toContain('v_session.store_id = v_device.store_id');
+    expect(secureManualSaleMigration).not.toContain('v_device.store_id = coalesce(v_session.store_id');
+    expect(secureManualSaleMigration).toContain('revoke all on function public.create_manual_card_sale(bigint, text, uuid, uuid, text, text) from public, anon, authenticated');
+    expect(secureManualSaleMigration).toContain('grant execute on function public.create_manual_card_sale(bigint, text, uuid, uuid, uuid, text, text) to anon, authenticated, service_role');
+    expect(legacyManualSaleRemovalMigration).toContain('drop function if exists public.create_manual_card_sale(bigint, text, uuid, uuid, text, text)');
+  });
+
+  it('preserves Manual Sale encoding, cents, idempotency, and one payment row', () => {
+    expect(secureManualSaleMigration).toContain("'بيع يدوي'");
+    expect(secureManualSaleMigration).not.toContain('Ø¨ÙŠØ¹ ÙŠØ¯ÙˆÙŠ');
+    expect(manualSaleUtilsSource).toContain("MANUAL_SALE_LABEL_AR = 'بيع يدوي'");
+    expect(manualSaleUtilsSource).not.toContain('Ø¨ÙŠØ¹ ÙŠØ¯ÙˆÙŠ');
+    expect(secureManualSaleMigration).toContain("'amount_cents', p_amount_cents");
+    expect(secureManualSaleMigration).toContain("'is_duplicate', true");
+    expect((secureManualSaleMigration.match(/insert into public\.payments/gi) || []).length).toBe(1);
+    expect(secureManualSaleMigration).toContain("'manual-card:' || trim(p_idempotency_key)");
   });
 
   it('validates webhook UUIDs before reader cleanup and preserves final payment states', () => {

@@ -5,7 +5,7 @@ import Login from './Login';
 import { printReceipt } from './utils/printerService';
 import { calculateOrderAccounting } from './utils/taxCalculator';
 import { validateSplitAmounts, calculateFiftyFiftySplit, toCents, fromCents } from './utils/splitPaymentUtils';
-import { parseManualSaleAmountToCents } from './utils/manualSaleUtils';
+import { MANUAL_SALE_LABEL_AR, parseManualSaleAmountToCents } from './utils/manualSaleUtils';
 import { createTerminalAttemptFinalizer, isFinalTerminalStatus, normalizeTerminalStatus } from './utils/terminalAttempt';
 import AdminDashboard from './admin/AdminDashboard';
 import StoreThemeProvider from './providers/StoreThemeProvider';
@@ -748,6 +748,7 @@ export default function App() {
         p_description: manualSaleDescription.trim() || null,
         p_accounting_group_id: manualSaleAccountingGroupId,
         p_pos_device_id: deviceId,
+        p_pos_device_token: localStorage.getItem('device_token') || null,
         p_idempotency_key: manualSaleIdempotencyKeyRef.current,
         p_order_type: orderType,
       });
@@ -4112,7 +4113,7 @@ export default function App() {
               className="w-full mb-2 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/25 text-amber-700 dark:text-amber-300 font-extrabold text-xs hover:bg-amber-100 dark:hover:bg-amber-950/40 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
             >
               <CreditCard className="w-4 h-4" />
-              <span>{isArabic ? 'بيع يدوي' : 'Manual Sale'}</span>
+              <span>{isArabic ? MANUAL_SALE_LABEL_AR : 'Manual Sale'}</span>
             </button>
 
             {/* Primary Checkout Button */}
@@ -4138,7 +4139,7 @@ export default function App() {
             <div className="p-5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="font-extrabold text-base text-slate-800 dark:text-white">{isArabic ? 'بيع يدوي' : 'Manual Card Sale'}</h3>
+                  <h3 className="font-extrabold text-base text-slate-800 dark:text-white">{isArabic ? MANUAL_SALE_LABEL_AR : 'Manual Card Sale'}</h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{isArabic ? 'أدخل المبلغ واختر المجموعة الضريبية قبل الدفع على WisePOS E.' : 'Enter the amount and tax group before paying on WisePOS E.'}</p>
                 </div>
                 <CreditCard className="w-6 h-6 text-amber-500 shrink-0" />
